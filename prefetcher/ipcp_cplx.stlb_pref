@@ -1,0 +1,341 @@
+
+/* STLB prefetcher - SPP style IP-based page-delta prefetching */
+
+#include "ooo_cpu.h"
+#include "cache.h"
+
+#define NUM_IP_TABLE_STLB_ENTRIES 1024
+#define NUM_IP_INDEX_BITS 10
+#define NUM_IP_TAG_BITS 6
+
+#define NUM_DPT_SET 4096
+#define NUM_DPT_WAY 2
+#define C_SIG_BIT 4
+#define C_SIG_MAX ((1 << C_SIG_BIT) - 1)
+
+#define CPLX_DIST 0
+#define PF_THRESHOLD 0
+#define NUM_OF_STRIDE_BITS 5
+#define NUM_SIG_BITS 10
+#define REGION_OFFSET_MASK 0x1F
+//#define NUM_OF_PAGES_IN_REGION 32
+
+//#define SPP_CPLX_DEBUG_PRINT
+#ifdef SPP_CPLX_DEBUG_PRINT
+#define SPP_CPLX_DP(x) x
+#else
+#define SPP_CPLX_DP(x)
+#endif
+
+class IP_TABLE_STLB {
+	public:
+		uint64_t ip_tag;
+		uint64_t last_page;                                     // last page seen by IP
+		uint64_t last_page_offset;
+		uint16_t signature;                                     // CPLX signature
+		uint8_t ip_valid;
+
+	IP_TABLE_STLB()
+	{
+		ip_tag = 0 ;
+		last_page = 0;
+		last_page_offset = 0;
+		signature = 0;
+		ip_valid = 0;
+	};
+
+};
+
+class PAGE_DELTA_PRED_TABLE {
+	public:
+		int64_t delta[NUM_CPUS][NUM_DPT_SET][NUM_DPT_WAY];
+		uint32_t c_delta[NUM_CPUS][NUM_DPT_SET][NUM_DPT_WAY],
+			 c_sig[NUM_CPUS][NUM_DPT_SET];
+	PAGE_DELTA_PRED_TABLE()
+	{
+		for(uint32_t cpu = 0; cpu < NUM_CPUS; cpu++)
+		{
+			for(uint32_t set = 0; set < NUM_DPT_SET; set++)
+			{
+				for(uint8_t way = 0; way < NUM_DPT_WAY; way++)
+				{
+					delta[cpu][set][way] = 0;
+					c_delta[cpu][set][way] = 0;
+				}
+				c_sig[cpu][set] = 0;
+			}
+		
+		}
+	};
+};
+
+IP_TABLE_STLB trackers_stlb[NUM_CPUS][NUM_IP_TABLE_STLB_ENTRIES];
+PAGE_DELTA_PRED_TABLE DPT_STLB;
+
+int page_prefetch_degree[NUM_CPUS];
+
+
+uint32_t encode_metadata(int stride)
+{
+        uint32_t metadata = 0;
+
+        // first encode stride in the last NUM_OF_STRIDE_BITS bits of the metadata
+        if(stride > 0)
+            metadata = stride;
+        else
+            metadata = ((-1*stride) | 0b1000000);
+        return metadata;
+
+}
+
+
+void read_pattern(uint16_t curr_sig, int64_t *delta_q, uint32_t *confidence_q, uint32_t &lookahead_way, uint32_t &pf_q_tail, uint8_t cpu)
+{
+    // Update (sig, delta) correlation
+    uint32_t local_conf = 0,            
+             max_conf = 0;
+
+    if (DPT_STLB.c_sig[cpu][curr_sig]) {
+        for (uint32_t way = 0; way < NUM_DPT_WAY; way++) {
+            local_conf = (100 * DPT_STLB.c_delta[cpu][curr_sig][way]) / DPT_STLB.c_sig[cpu][curr_sig];
+
+            if (local_conf >= PF_THRESHOLD) {
+                confidence_q[pf_q_tail] = local_conf;
+                delta_q[pf_q_tail] = DPT_STLB.delta[cpu][curr_sig][way];
+
+                // Lookahead path follows the most confident entry
+                if (local_conf > max_conf) {
+                    lookahead_way = way;
+                    max_conf = local_conf;
+                }
+                pf_q_tail++;
+
+		SPP_CPLX_DP (/*if(warmup_complete[cpu])*/ {
+			cout << "[DPT_STLB] " << __func__ << " HIGH_CONF " << local_conf << " sig: " << hex << curr_sig << dec << "  way: " << way ;
+			cout << " delta: " << DPT_STLB.delta[cpu][curr_sig][way] << " c_delta: " << DPT_STLB.c_delta[cpu][curr_sig][way] << " c_sig: " << DPT_STLB.c_sig[cpu][curr_sig];
+			cout << " local_confidence: " << local_conf << " pf_q_tail: " << pf_q_tail << endl;
+		}); 
+             }
+	     else {
+                SPP_CPLX_DP (/*if(warmup_complete[cpu])*/ {
+                    cout << "[DPT_STLB] " << __func__ << "  LOW_CONF: " << local_conf << " sig: " << hex << curr_sig << dec << " way: " << way;
+                    cout << " delta: " << DPT_STLB.delta[cpu][curr_sig][way] << " c_delta: " << DPT_STLB.c_delta[cpu][curr_sig][way] << " c_sig: " << DPT_STLB.c_sig[cpu][curr_sig];
+                    cout << " local_confidence: " << local_conf << " pf_q_tail: " << pf_q_tail << endl;
+               } );
+            }
+        }
+        //lookahead_conf = max_conf;
+        //if (lookahead_conf >= PF_THRESHOLD) depth++;
+
+        //SPP_DP (cout << "global_accuracy: " << GHR.global_accuracy << " lookahead_conf: " << lookahead_conf << endl;);
+    } else confidence_q[pf_q_tail] = 0;
+}
+
+uint16_t update_sig_stlb(uint16_t old_sig, int64_t delta)
+{
+    uint16_t new_sig = 0;
+    int sig_delta = 0;
+
+// 7-bit sign magnitude form, since we need to track deltas from +63 to -63
+//Neelu: Not +63 to -63 because we are now changing the region size.
+
+    sig_delta = (delta < 0) ? (((-1) * delta) + (1 << (NUM_OF_STRIDE_BITS-1))) : delta ;
+	//	cout << "delta="<<delta<< " sig_Delta: " << sig_delta << " - " << ((1 << (NUM_OF_STRIDE_BITS)) - 1) << endl;
+    new_sig = ((old_sig << 1) ^ sig_delta) & ((1 << NUM_SIG_BITS)-1);                     // 12-bit signature
+
+    return new_sig;
+}
+
+int update_conf(uint16_t last_signature, int64_t stride, uint8_t cpu)
+{	
+	uint32_t way, victim_way ;
+	//Case 1: Hit
+	for (way = 0; way < NUM_DPT_WAY; way++)
+	{
+		if (DPT_STLB.delta[cpu][last_signature][way] == stride)
+		{
+			DPT_STLB.c_delta[cpu][last_signature][way]++;
+			DPT_STLB.c_sig[cpu][last_signature]++;
+			if(DPT_STLB.c_sig[cpu][last_signature] > C_SIG_MAX)
+			{
+				for(uint32_t way = 0; way < NUM_DPT_WAY; way++)
+					DPT_STLB.c_delta[cpu][last_signature][way] >>= 1;
+				DPT_STLB.c_sig[cpu][last_signature] >>= 1;
+			}
+			SPP_CPLX_DP (/*if (warmup_complete[cpu])*/ {
+				cout << "[DPT_STLB] " << __func__ << " hit last_sig: " << hex << last_signature << dec << " way: " << way ;
+				cout << " delta: " << DPT_STLB.delta[cpu][last_signature][way] << " c_delta: " << DPT_STLB.c_delta[cpu][last_signature][way] << " c_Sig: " <<  DPT_STLB.c_sig[cpu][last_signature] << endl; 
+			});	
+			break;
+		}
+	} 
+
+
+	//Case 2: Miss
+	if(way == NUM_DPT_WAY)
+	{
+		uint32_t min_counter = C_SIG_MAX;
+		victim_way = NUM_DPT_WAY;
+		for(way = 0; way < NUM_DPT_WAY; way++)
+		{
+			if(DPT_STLB.c_delta[cpu][last_signature][way] < min_counter)
+			{
+				min_counter = DPT_STLB.c_delta[cpu][last_signature][way];
+				victim_way = way;
+			}
+		}
+		
+		//Insert delta in the way that has lowest confidence
+		DPT_STLB.delta[cpu][last_signature][victim_way] = stride;
+		DPT_STLB.c_delta[cpu][last_signature][victim_way] = 0;
+		DPT_STLB.c_sig[cpu][last_signature]++;
+		if (DPT_STLB.c_sig[cpu][last_signature] > C_SIG_MAX)
+		{
+			for(uint32_t way = 0; way < NUM_DPT_WAY; way++)
+				DPT_STLB.c_delta[cpu][last_signature][way] >>= 1;
+			DPT_STLB.c_sig[cpu][last_signature] >>= 1;
+
+		}
+		SPP_CPLX_DP (/* if (warmup_complete[cpu])*/ {
+			cout << "[DPT_STLB] " << __func__ << " miss last_sig: "<< hex << last_signature << dec << " way: " << victim_way;
+			cout << " delta: " << DPT_STLB.delta[cpu][last_signature][victim_way] << " c_delta: " << DPT_STLB.c_delta[cpu][last_signature][victim_way] << " c_Sig: " <<  DPT_STLB.c_sig[cpu][last_signature] << endl;
+		});
+		
+	}
+
+	//Assertion
+	if(victim_way == NUM_DPT_WAY) {
+		cout << "Cannot find any replacement in DPT_STLB" << endl;
+		assert(0);
+	}
+
+}
+       
+void CACHE::stlb_prefetcher_initialize()
+{
+	for (uint32_t cpu = 0; cpu < NUM_CPUS; cpu++)
+		page_prefetch_degree[cpu] = 1;
+}
+
+void CACHE::stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t instr_id, uint8_t instruction)
+{
+	uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
+	uint16_t curr_signature = 0, last_signature = 0;
+	uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+	uint64_t curr_page_offset = curr_page & REGION_OFFSET_MASK;		
+
+	// calculate the index bit
+       int index = ip & ((1 << NUM_IP_INDEX_BITS)-1);
+       if(trackers_stlb[cpu][index].ip_tag != ip_tag){               // new/conflict IP
+ 	       if(trackers_stlb[cpu][index].ip_valid == 0){              // if valid bit is zero, update with latest IP info
+ 	       	//	num_conflicts++;
+ 	       		trackers_stlb[cpu][index].ip_tag = ip_tag;
+        		trackers_stlb[cpu][index].last_page = curr_page;
+        		trackers_stlb[cpu][index].last_page_offset = curr_page_offset;
+        		trackers_stlb[cpu][index].signature = 0;
+        		//trackers_stlb[cpu][index].conf = 0;
+        		//trackers_l1[cpu][index].str_valid = 0;
+        		//trackers_l1[cpu][index].str_strength = 0;
+        		//trackers_l1[cpu][index].str_dir = 0;
+        		//trackers_l1[cpu][index].pref_type = 0;
+        		trackers_stlb[cpu][index].ip_valid = 1;
+    		}
+		else 
+		{                                                    // otherwise, reset valid bit and leave the previous IP as it is
+        		trackers_stlb[cpu][index].ip_valid = 0;
+    		}
+
+                return;
+    	}
+    	else {                                                     // if same IP encountered, set valid bit
+    	    trackers_stlb[cpu][index].ip_valid = 1;
+    	}
+
+	 // calculate the stride between the current page and the last page
+	 int64_t stride = 0;
+         if (curr_page_offset > trackers_stlb[cpu][index].last_page_offset){
+		stride = curr_page_offset - trackers_stlb[cpu][index].last_page_offset;
+	}
+	else {
+        	stride = trackers_stlb[cpu][index].last_page_offset - curr_page_offset;
+        	stride *= -1;
+    	}
+
+
+    	// don't do anything if same address is seen twice in a row
+    	if (stride == 0)
+        	return;
+
+		
+/*	if(curr_page_offset != trackers_stlb[cpu][index].last_page_offset)
+	{
+		if(stride < 0)
+			stride += NUM_OF_PAGES_IN_REGION;
+		else
+			stride -= NUM_OF_PAGES_IN_REGION;
+	}	*/
+
+	SPP_CPLX_DP( /*if(warmup_complete[cpu])*/ {
+	cout << "IP: " << ip << " page number: " << hex << curr_page << " curr_page_offset: " << curr_page_offset << " STRIDE: " << stride << " ip_tag: "<< ip_tag << " last_page: " << trackers_stlb[cpu][index].last_page << " signature: " << hex << trackers_stlb[cpu][index].signature << endl;
+	});
+	
+	last_signature = trackers_stlb[cpu][index].signature;
+	// update complex stride(CPLX) confidence
+	update_conf(last_signature, stride, cpu);
+
+	// calculate and update new signature in IP table
+	curr_signature = update_sig_stlb(last_signature, stride);
+	trackers_stlb[cpu][index].signature = curr_signature;
+	//cout << "Last SIGNATURE: " << last_signature << " Curr SIGNATURE: " << curr_signature << endl;
+	int pref_offset = 0;
+	uint32_t confidence_q[STLB_MSHR_SIZE], 
+		 pf_q_tail, 
+		 lookahead_way,
+		 metadata;
+	int64_t delta_q[STLB_MSHR_SIZE];
+
+	for (int i = 0; i < page_prefetch_degree[cpu] + CPLX_DIST; i++)
+	{
+		for (uint32_t i=0; i<STLB_MSHR_SIZE; i++)
+		{
+			confidence_q[i] = 0;
+			delta_q[i] = 0;
+		}
+		lookahead_way = NUM_DPT_WAY;
+		pf_q_tail = 0;
+		read_pattern(curr_signature, delta_q, confidence_q, lookahead_way, pf_q_tail, cpu);
+		SPP_CPLX_DP( /*if( warmup_complete[cpu])*/ {
+			cout << "curr_signature: " << curr_signature <<" Lookahead_way " << lookahead_way << " delta_q: " << delta_q[lookahead_way] << " confidence_q: " << confidence_q[lookahead_way] << endl ;
+		}); 
+		pref_offset += delta_q[lookahead_way];
+		uint64_t pf_address = (curr_page + pref_offset) << LOG2_PAGE_SIZE;
+		
+		metadata = encode_metadata(0);
+		if (confidence_q[lookahead_way] > 0 && i >= CPLX_DIST)
+		{
+			prefetch_translation(ip, pf_address, FILL_L2, metadata, instr_id, instruction);
+			SPP_CPLX_DP(/* if(warmup_complete[cpu])*/ {
+				cout << "PREFETCH_TRANSLATION IP: " << ip << " Confidence: " << confidence_q[lookahead_way] << " Page number: " << hex << pf_address << endl ;
+			});
+		} 
+		curr_signature = update_sig_stlb(curr_signature, delta_q[lookahead_way]);
+	}
+	trackers_stlb[cpu][index].last_page = curr_page;
+	trackers_stlb[cpu][index].last_page_offset = curr_page_offset;
+	return;	
+}
+
+
+
+
+
+
+
+
+void CACHE::stlb_prefetcher_cache_fill(/*uint64_t v_addr,*/ uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{}
+
+void CACHE::stlb_prefetcher_final_stats()
+{
+	cout << "SPP style IP based page-level delta prefetching" << endl;
+}

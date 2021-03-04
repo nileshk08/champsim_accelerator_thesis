@@ -1,0 +1,799 @@
+//
+// Data Prefetching Championship Simulator 2
+//
+#define DEGREE 2
+#include <stdio.h>
+#include "cache.h"
+#include <map>
+#include <set>
+#include <cassert>
+#include "training_unit.h"
+#include "off_chip_info.h"
+
+//IPCP structures 
+
+#define DO_PREF
+#define NUM_BLOOM_ENTRIES 4096
+#define NUM_IP_TABLE_L2_ENTRIES 1024
+#define NUM_IP_INDEX_BITS_L2 10
+#define NUM_IP_TAG_BITS_L2 6
+#define S_TYPE 1                                            // stream
+#define CS_TYPE 2                                           // constant stride
+#define CPLX_TYPE 3                                         // complex stride
+#define NL_TYPE 4                                           // next line
+
+
+// #define SIG_DEBUG_PRINT_L2
+#ifdef SIG_DEBUG_PRINT_L2
+#define SIG_DP(x) x
+#else
+#define SIG_DP(x)
+#endif
+
+class STAT_COLLECT {
+  public:
+    uint64_t useful;                                    
+    uint64_t filled;                                    
+    uint64_t misses;
+    uint64_t polluted_misses;                                 
+
+    uint8_t bl_filled[NUM_BLOOM_ENTRIES];
+    uint8_t bl_request[NUM_BLOOM_ENTRIES];
+
+    STAT_COLLECT () {
+        useful = 0;
+        filled = 0;
+        misses = 0;
+        polluted_misses = 0;
+
+        for(int i=0; i<NUM_BLOOM_ENTRIES; i++){
+            bl_filled[i] = 0;
+            bl_request[i] = 0;
+        }
+    };
+};
+
+class IP_TRACKER {
+  public:
+    uint64_t ip_tag;
+    uint16_t ip_valid;
+    uint32_t pref_type;                                     // prefetch class type
+    int stride;
+    uint64_t page_tag;                                     // last page seen by IP
+    uint64_t last_cl_offset;                                // last cl offset in the 4KB page
+    uint16_t signature;                                     // CPLX signature                                             // last stride sent by metadata
+
+    IP_TRACKER () {
+        ip_tag = 0;
+        ip_valid = 0;
+        pref_type = 0;
+        stride = 0;
+        page_tag = 0;
+        last_cl_offset = 0;
+        signature = 0;
+    };
+};
+
+
+class DELTA_PRED_TABLE {
+public:
+    int delta;
+    int conf;
+
+    DELTA_PRED_TABLE () {
+        delta = 0;
+        conf = 0;
+    };        
+};
+
+
+STAT_COLLECT stats_l2[NUM_CPUS][5];     // for GS, CS, CPLX, NL and no class
+uint64_t num_misses_l2[NUM_CPUS] = {0};
+DELTA_PRED_TABLE DPT_l2[NUM_CPUS][4096];
+uint32_t spec_nl_l2[NUM_CPUS] = {0};
+IP_TRACKER trackers[NUM_CPUS][NUM_IP_TABLE_L2_ENTRIES];
+
+
+uint64_t hash_bloom_l2(uint64_t addr){
+    uint64_t first_half, sec_half;
+    first_half = addr & 0xFFF;
+    sec_half = (addr >> 12) & 0xFFF;
+ if((first_half ^ sec_half) >= 4096)
+     assert(0);
+    return ((first_half ^ sec_half) & 0xFFF);
+}
+
+int decode_stride(uint32_t metadata){
+    int stride=0;
+    if(metadata & 0b1000000)
+        stride = -1*(metadata & 0b111111);
+    else
+        stride = metadata & 0b111111;
+
+    return stride;
+}
+
+int update_conf_l1(int stride, int pred_stride, int conf){
+    if(stride == pred_stride){             // use 2-bit saturating counter for confidence
+        conf++;
+        if(conf > 3)
+            conf = 3;
+    } else {
+        conf--;
+        if(conf < 0)
+            conf = 0;
+    }
+
+return conf;
+}
+
+uint16_t update_sig_l2(uint16_t old_sig, int delta){
+    uint16_t new_sig = 0;
+    int sig_delta = 0;
+
+// 7-bit sign magnitude form, since we need to track deltas from +63 to -63
+    sig_delta = (delta < 0) ? (((-1) * delta) + (1 << 6)) : delta;
+    new_sig = ((old_sig << 1) ^ sig_delta) & 0xFFF;                     // 12-bit signature
+
+    return new_sig;
+}
+
+uint32_t encode_metadata_l2(int stride, uint16_t type, int spec_nl_l2){
+
+uint32_t metadata = 0;
+
+// first encode stride in the last 8 bits of the metadata
+if(stride > 0)
+    metadata = stride;
+else
+    metadata = ((-1*stride) | 0b1000000);
+
+// encode the type of IP in the next 4 bits
+metadata = metadata | (type << 8);
+
+// encode the speculative NL bit in the next 1 bit
+metadata = metadata | (spec_nl_l2 << 12);
+
+return metadata;
+
+}
+
+void stat_col_L2(uint64_t addr, uint8_t cache_hit, uint8_t cpu, uint64_t ip){
+    uint64_t index = hash_bloom_l2(addr);
+    int ip_index = ip & ((1 << NUM_IP_INDEX_BITS_L2)-1);
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS_L2) & ((1 << NUM_IP_TAG_BITS_L2)-1);
+
+    for(int i=0; i<5; i++){
+        if(cache_hit){
+            if(stats_l2[cpu][i].bl_filled[index] == 1){
+                stats_l2[cpu][i].useful++;
+                stats_l2[cpu][i].filled++;
+                stats_l2[cpu][i].bl_filled[index] = 0;
+            }
+        } else {
+            if(ip_tag == trackers[cpu][ip_index].ip_tag){
+                if(trackers[cpu][ip_index].pref_type == i)
+                    stats_l2[cpu][i].misses++;
+                if(stats_l2[cpu][i].bl_filled[index] == 1){
+                    stats_l2[cpu][i].polluted_misses++;
+                    stats_l2[cpu][i].filled++;
+                    stats_l2[cpu][i].bl_filled[index] = 0;
+                }
+            }
+        }
+
+        if(num_misses_l2[cpu] % 1024 == 0){
+            for(int j=0; j<NUM_BLOOM_ENTRIES; j++){
+                stats_l2[cpu][i].filled += stats_l2[cpu][i].bl_filled[j];
+                stats_l2[cpu][i].bl_filled[j] = 0;
+                stats_l2[cpu][i].bl_request[j] = 0;
+            }
+        }
+    }
+}
+
+unsigned int total_access;
+unsigned int predictions;
+unsigned int no_prediction;
+unsigned int stream_end;
+unsigned int no_translation;
+unsigned int reuse;
+uint64_t last_address;
+
+#define BUFFER_SIZE 128
+
+//#define RESTRICT_REGION
+
+struct PrefetchBuffer
+{
+    uint64_t buffer[BUFFER_SIZE];
+    bool valid[BUFFER_SIZE];
+    unsigned int next_index;
+
+    void reset(){
+        for(unsigned int i=0; i<BUFFER_SIZE; i++)
+            valid[i] = false;
+        next_index = 0;
+    }
+    void add(uint64_t addr){
+        buffer[next_index] = addr;
+        valid[next_index] = true;
+        next_index = (next_index + 1)%BUFFER_SIZE;
+    }
+
+    void issue(unsigned int i){
+        assert(valid[i]);
+        valid[i] = false;
+    }
+
+    bool get(unsigned int i, uint64_t& addr){
+        addr = buffer[i];
+        return valid[i];
+    }
+};
+
+struct ISB_prefetcher_t
+{
+    TUCache training_unit; 
+
+    OffChipInfo oci;
+
+    uint64_t alloc_counter;
+    uint64_t last_page;
+
+    uint64_t stream_divergence_count;
+    uint64_t stream_divergence_new_stream;
+    uint64_t candidate_tlb_miss;
+    uint64_t candidate_diff;
+    PrefetchBuffer prefetch_buffer;
+
+    unsigned int isb_train(unsigned int str_addr_A, uint64_t phy_addr_B)
+    {
+        //Algorithm for training correlated pair (A,B) 
+        //Step 2a : If SA(A)+1 does not exist, assign B SA(A)+1
+        //Step 2b : If SA(A)+1 exists, copy the stream starting at S(A)+1 and then assign B SA(A)+1
+
+        unsigned int str_addr_B;
+        bool str_addr_B_exists = oci.get_structural_address(phy_addr_B, str_addr_B); 
+#ifdef DEBUG
+        std::cout << "-----S(A) : " << str_addr_A << std::endl;
+#endif
+        // If S(A) is at a stream boundary return, we don't need to worry about B because it is as good as a stream start
+        if((str_addr_A+1) % STREAM_MAX_LENGTH == 0){
+            if(!str_addr_B_exists){
+                str_addr_B = assign_structural_addr();
+                oci.update(phy_addr_B, str_addr_B);
+            }
+            return str_addr_B;
+        }
+
+        bool invalidated = false;
+        if(str_addr_B_exists){
+            //if(str_addr_B == str_addr_A + 1){
+            if(str_addr_B%STREAM_MAX_LENGTH == (str_addr_A + 1)%STREAM_MAX_LENGTH){
+#ifdef DEBUG
+                std::cout << phy_addr_B << " has a structural address of " << str_addr_B << " conf++ " << std::endl;
+#endif
+                oci.increase_confidence(phy_addr_B);
+                return str_addr_B;
+            }
+            else{
+#ifdef DEBUG
+                std::cout << phy_addr_B << " has a structural address of " << str_addr_B << " conf-- " << std::endl;
+#endif
+                bool ret = oci.lower_confidence(phy_addr_B);
+                if(ret)
+                    return str_addr_B;
+#ifdef DEBUG
+                std::cout << "Invalidate " << std::endl;
+#endif
+                invalidated = true;
+                oci.invalidate(phy_addr_B, str_addr_B);
+                str_addr_B_exists = false;
+            }
+        }
+
+        assert(!str_addr_B_exists);
+
+        //Handle stream divergence
+
+        unsigned int i=1;
+        uint64_t phy_addr_Aplus1;
+        bool phy_addr_Aplus1_exists = oci.get_physical_address(phy_addr_Aplus1, str_addr_A+1);
+
+        if(phy_addr_Aplus1_exists)
+            stream_divergence_count++;
+//#define CFIX
+#ifdef CFIX
+        while(phy_addr_Aplus1_exists){
+#ifdef DEBUG
+            std::cout << "-----S(A)+1 : " << phy_addr_Aplus1 << std::endl;
+#endif
+            i++;
+
+            if((str_addr_A+i) % STREAM_MAX_LENGTH == 0)
+            {
+                stream_divergence_new_stream++;
+                str_addr_B = assign_structural_addr();
+                break;
+            }
+            phy_addr_Aplus1_exists = oci.get_physical_address(phy_addr_Aplus1, str_addr_A+i);
+
+            // oci.reassign_stream(str_addr_A+1, assign_structural_addr()); //TODO TBD. Should we re-assign??
+        }
+        if(!phy_addr_Aplus1_exists)
+            str_addr_B = str_addr_A + i;
+
+#else
+    if(phy_addr_Aplus1_exists)
+    {
+        //Old solution: Nothing fancy, just assign a new address
+        stream_divergence_count++;
+        if(invalidated)
+            return str_addr_B;
+        else
+            str_addr_B = assign_structural_addr();
+    }
+    else
+        str_addr_B = str_addr_A + 1;
+
+#endif
+
+#ifdef DEBUG
+        std::cout << (void*)phy_addr_B << " allotted a structural address of " << str_addr_B << std::endl;
+        std::cout << "-----S(B) : " << str_addr_B << std::endl;
+#endif
+        oci.update(phy_addr_B, str_addr_B);
+
+        return str_addr_B;
+
+    }
+
+    vector<uint64_t> isb_predict(uint64_t trigger_phy_addr, unsigned int trigger_str_addr, uint64_t ip)
+    {
+#ifdef DEBUG
+        std::cout << "*Trigger Str addr " << trigger_str_addr << std::endl;
+#endif
+        uint64_t candidate_phy_addr;	
+        vector<uint64_t> candidates;
+        candidates.clear();
+
+#ifndef RESTRICT_REGION
+        unsigned int lookahead = 1;
+        unsigned int ideal = 0;
+        for(unsigned int i=0; i<STREAM_MAX_LENGTH; i++)
+        {
+            if(ideal >= DEGREE)
+                break;
+            uint64_t str_addr_candidate = trigger_str_addr+lookahead+i ;
+            if(str_addr_candidate % STREAM_MAX_LENGTH == 0)
+            {
+                stream_end++;
+                break;
+            }
+
+            bool ret = oci.get_physical_address(candidate_phy_addr, str_addr_candidate);
+            if(ret)
+            {
+                ideal++;
+                candidates.push_back(candidate_phy_addr);
+            }
+            else
+                no_translation++;
+        }
+#else
+        unsigned int num_prefetched = 0;
+        for(unsigned int i=0; i<STREAM_MAX_LENGTH; i++)
+        {
+            uint64_t str_addr_candidate = ((trigger_str_addr>>STREAM_MAX_LENGTH_BITS) << STREAM_MAX_LENGTH_BITS)+i;
+
+            if(str_addr_candidate == trigger_str_addr)
+                continue;
+
+            bool ret = oci.get_physical_address(candidate_phy_addr, str_addr_candidate);
+
+            if(ret)
+                //if(ret && ((candidate_phy_addr >> 12) == (trigger_phy_addr >> 12)) )
+            {
+                candidates.push_back(candidate_phy_addr);
+
+                if(num_prefetched >= DEGREE)
+                    break;
+            }
+        }
+#endif
+
+        return candidates;
+    }
+
+    bool access_training_unit(uint64_t key, uint64_t& last_phy_addr, unsigned int& last_str_addr, uint64_t next_addr)
+    {
+        //TrainingUnitEntry* curr_training_entry = training_unit.find(key)->second;
+        bool pair_found = true;
+        //if(curr_training_entry == NULL)
+        if(training_unit.find(key) == training_unit.end())
+        {
+            //std::cout << "Not found " << std::hex << key << std::endl;
+            //TrainingUnitEntry* new_training_entry = training_unit.select(key);
+            TrainingUnitEntry* new_training_entry = new TrainingUnitEntry;
+            assert(new_training_entry);
+            new_training_entry->reset();
+            training_unit[key] = new_training_entry;
+            pair_found = false;
+        }
+
+        assert(training_unit.find(key) != training_unit.end());
+        TrainingUnitEntry* curr_training_entry = training_unit.find(key)->second;
+        assert(curr_training_entry != NULL);
+        last_str_addr = curr_training_entry->str_addr;
+        last_phy_addr = curr_training_entry->addr;
+        uint64_t last_addr = curr_training_entry->addr;
+        if(last_addr == next_addr)
+            return false;
+#ifdef DEBUG
+        // off_chip_corr_matrix.update_neighbor(last_addr, next_addr); 
+#endif
+        return pair_found;
+
+    }
+
+    void update_training_unit(uint64_t key, uint64_t addr, unsigned int str_addr)
+    {
+        //std::cout << "Updated " << std::hex << key << " to " << addr << std::dec << std::endl;
+        assert(training_unit.find(key) != training_unit.end());
+        TrainingUnitEntry* curr_training_entry = training_unit.find(key)->second;
+        assert(curr_training_entry);
+        curr_training_entry->addr = addr;
+        curr_training_entry->str_addr = str_addr;
+    }
+
+    public :
+    ISB_prefetcher_t()
+    {
+        //std::cout<<"ISB constructor constructed\n";
+        training_unit.clear();
+        alloc_counter = 0;
+        last_page = 0;
+
+        stream_divergence_count = 0;
+        stream_divergence_new_stream = 0;
+        candidate_tlb_miss = 0;
+        candidate_diff = 0;
+        prefetch_buffer.reset(); 
+    }
+
+    bool get_structural_address( uint64_t addr, unsigned int& str_addr)
+    {
+        return oci.get_structural_address(addr, str_addr);
+    }
+
+
+    unsigned int assign_structural_addr()
+    {
+        alloc_counter += STREAM_MAX_LENGTH;
+#ifdef DEBUG
+        std::cout << "  ALLOC " << alloc_counter << std::endl;
+#endif
+        return ((unsigned int) alloc_counter);	
+
+    }
+};
+
+ISB_prefetcher_t isb;
+
+
+void CACHE::l2c_prefetcher_initialize() 
+{
+    printf("Ideal ISB Prefetching\n");
+    // you can inspect these knob values from your code to see which configuration you're runnig in
+    //printf("Knobs visible from prefetcher: %d %d %d\n", knob_scramble_loads, knob_small_llc, knob_low_bandwidth);
+    total_access = 0;
+    predictions = 0;
+    no_prediction = 0;
+    stream_end = 0;
+    no_translation = 0;
+    
+    reuse = 0;
+}
+
+//Neelu: added metadata_in argument to match with the prototype in cache.h, changed return type from void and added return statement
+//Neelu: also adding metadata_in prefetch_line function call as the last argument to match the prototype in cache.h 
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+	//IPCP Prefetching
+
+uint64_t page = addr >> LOG2_PAGE_SIZE;
+    uint64_t curr_tag = (page ^ (page >> 6) ^ (page >> 12)) & ((1<<NUM_IP_TAG_BITS_L2)-1);
+    uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+    int prefetch_degree = 0;
+    int64_t stride = decode_stride(metadata_in);
+    uint32_t pref_type = (metadata_in & 0xF00) >> 8;
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS_L2) & ((1 << NUM_IP_TAG_BITS_L2)-1);
+    int num_prefs = 0;
+    uint16_t signature = 0;
+    uint64_t bl_index = 0;
+if(NUM_CPUS == 1){
+   if (MSHR.occupancy < (1*MSHR.SIZE)/2)
+    prefetch_degree = 4;
+   else 
+    prefetch_degree = 3;  
+} else {                                    // tightening the degree for multi-core
+    prefetch_degree = 2;
+}
+
+stat_col_L2(addr, cache_hit, cpu, ip);
+if(cache_hit == 0 && type != PREFETCH)
+    num_misses_l2[cpu]++;
+
+// calculate the index bit
+int index = ip & ((1 << NUM_IP_INDEX_BITS_L2)-1);
+    if(trackers[cpu][index].ip_tag != ip_tag){              // new/conflict IP
+        if(trackers[cpu][index].ip_valid == 0){             // if valid bit is zero, update with latest IP info
+        trackers[cpu][index].ip_tag = ip_tag;
+        trackers[cpu][index].pref_type = pref_type;
+        trackers[cpu][index].stride = stride;
+        trackers[cpu][index].page_tag = curr_tag;
+        trackers[cpu][index].last_cl_offset = cl_offset;
+        trackers[cpu][index].signature = 0;
+    } else {
+        trackers[cpu][index].ip_valid = 0;                  // otherwise, reset valid bit and leave the previous IP as it is
+    }
+
+        // issue a next line prefetch upon encountering new IP
+        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
+	#ifdef DO_PREF
+	prefetch_line(ip, addr, pf_address, FILL_L2, 0);
+        #endif
+        
+	SIG_DP(cout << "1, ");
+        goto isb_pref;
+    }
+    else {                                                  // if same IP encountered, set valid bit
+        trackers[cpu][index].ip_valid = 1;
+    }
+
+// update the IP table upon receiving metadata from prefetch
+if(type == PREFETCH){
+    trackers[cpu][index].pref_type = pref_type;
+    trackers[cpu][index].stride = stride;
+    spec_nl_l2[cpu] = metadata_in & 0x1000;
+}
+
+SIG_DP(
+cout << ip << ", " << cache_hit << ", " << cl_addr << ", ";
+cout << ", " << stride << "; ";
+);
+
+// do not train cplx on prefetch requests
+if (type != PREFETCH){
+    int64_t stride_cplx = 0;
+
+
+
+    if (cl_offset > trackers[cpu][index].last_cl_offset)
+        stride_cplx = cl_offset - trackers[cpu][index].last_cl_offset;
+    else {
+        stride_cplx = trackers[cpu][index].last_cl_offset - cl_offset;
+        stride_cplx *= -1;
+    }
+
+    // page boundary learning
+if(curr_tag != trackers[cpu][index].page_tag){
+    if(stride_cplx < 0)
+        stride_cplx += 64;
+    else
+        stride_cplx -= 64;
+}
+
+uint16_t last_signature = trackers[cpu][index].signature;
+// update complex stride(CPLX) confidence
+DPT_l2[cpu][last_signature].conf = update_conf_l1(stride_cplx, DPT_l2[cpu][last_signature].delta, DPT_l2[cpu][last_signature].conf);
+
+// update CPLX only if confidence is zero
+if(DPT_l2[cpu][last_signature].conf == 0)
+    DPT_l2[cpu][last_signature].delta = stride_cplx;
+
+// calculate and update new signature in IP table
+signature = update_sig_l2(last_signature, stride_cplx);
+trackers[cpu][index].signature = signature;
+
+// be conservative and do not prefetch at L2 if MPKC is too high
+if(stride_cplx == 0)
+    goto isb_pref;
+
+// cout << ip << ", " << cache_hit << ", " << cl_addr << ", " << addr << ", " << stride_cplx << "; ";
+// cout << last_signature<< ", "  << DPT_l2[cpu][last_signature].delta<< ", "  << DPT_l2[cpu][last_signature].conf << "; ";
+// cout << endl;
+}
+
+
+        if(DPT_l2[cpu][signature].conf >= 0 && DPT_l2[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        for (i=0; i<prefetch_degree; i++) {
+            pref_offset += DPT_l2[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+            // Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
+                    (DPT_l2[cpu][signature].conf == -1) ||
+                    (DPT_l2[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+
+            if(DPT_l2[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
+            // if(spec_nl_l2[cpu] == 1)
+                bl_index = hash_bloom_l2(pf_address);
+                stats_l2[cpu][CPLX_TYPE].bl_request[bl_index] = 1;
+                uint32_t metadata = encode_metadata_l2(0, CPLX_TYPE, spec_nl_l2[cpu]);
+                trackers[cpu][index].pref_type = 3;
+		#ifdef DO_PREF 
+		prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+                #endif
+
+		num_prefs++;
+                // cout << "here";
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l2(signature, DPT_l2[cpu][signature].delta);
+            trackers[cpu][index].pref_type = 3;
+        }
+    } 
+
+	//Neelu: Removed else if ladder and converted to two ifs.
+	 if((trackers[cpu][index].pref_type == 1 || trackers[cpu][index].pref_type == 2) && trackers[cpu][index].stride != 0){      // S or CS class   
+            uint32_t metadata = 0;
+            if(trackers[cpu][index].pref_type == 1){
+                prefetch_degree = prefetch_degree*2;
+                metadata = encode_metadata_l2(1, S_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            } else{
+                metadata = encode_metadata_l2(1, CS_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            }
+
+            for (int i=0; i<prefetch_degree; i++) {
+                uint64_t pf_address = (cl_addr + (trackers[cpu][index].stride*(i+1))) << LOG2_BLOCK_SIZE;
+                
+                // Check if prefetch address is in same 4 KB page
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                    break;
+                num_prefs++;
+		#ifdef DO_PREF
+		prefetch_line(ip, addr, pf_address, FILL_L2,metadata);
+                #endif
+
+		SIG_DP(cout << trackers[cpu][index].stride << ", ");
+            }
+        }
+    
+
+// if no prefetches are issued till now, speculatively issue a next_line prefetch
+if(num_prefs == 0 && spec_nl_l2[cpu] == 1){                                        // NL IP
+    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;  
+    bl_index = hash_bloom_l2(pf_address);
+    stats_l2[cpu][NL_TYPE].bl_request[bl_index] = 1;
+    uint32_t metadata = encode_metadata_l2(1, NL_TYPE, spec_nl_l2[cpu]);
+    trackers[cpu][index].pref_type = 3;
+    #ifdef DO_PREF
+    prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+    #endif
+    SIG_DP(cout << "1, ");
+}
+
+// update the IP table entries
+trackers[cpu][index].last_cl_offset = cl_offset;
+trackers[cpu][index].page_tag = curr_tag;
+
+SIG_DP(cout << endl);
+
+
+	//ISB prefetching
+    isb_pref:
+    if (type != LOAD)
+        return metadata_in;	//Neelu: changed from void to metadata_in
+
+    if(cache_hit)
+        return metadata_in;     //Neelu: changed from void to metadata_in	
+
+    //ip = 0;
+
+
+  // uncomment this line to see all the information available to make prefetch decisions
+ //  if(!cache_hit)
+ //    printf("%lld: Access (0x%llx 0x%llx %d %d %d) \n", get_current_cycle(0), addr, ip, cache_hit, get_l2_read_queue_occupancy(0), get_l2_mshr_occupancy(0));
+
+    uint64_t addr_B = (addr >> 6) << 6;
+    uint64_t key = ip;
+
+    if(addr_B == last_address)
+        return metadata_in;     //Neelu: changed from void to metadata_in
+    last_address = addr_B;
+
+    total_access++;
+
+    #ifdef DEBUG
+      std::cout << "**Trigger " << std::hex<< addr_B << " with key " << std::hex<< key << std::endl;
+    #endif
+      
+    unsigned int str_addr_B = 0;
+    bool str_addr_B_exists = isb.oci.get_structural_address(addr_B, str_addr_B); 
+
+    if(str_addr_B_exists){
+        vector<uint64_t> candidates = isb.isb_predict(addr_B, str_addr_B, ip);
+        unsigned int num_prefetched = 0;
+        for(unsigned int i=0; i<candidates.size(); i++)
+        {
+            int ret = prefetch_line(ip, addr, candidates[i], FILL_LLC, metadata_in);
+            if (ret == 1)
+            {
+                predictions++;
+                num_prefetched++;
+            }
+            if(num_prefetched >= DEGREE)
+                break;
+        }
+    }
+    else
+        no_prediction++;
+                
+
+    unsigned int str_addr_A;
+    uint64_t addr_A;
+    if(isb.access_training_unit(key, addr_A, str_addr_A, addr_B)){
+#ifdef DEBUG
+        std::cout << "Consider pair " << str_addr_A << " and " <<addr_B << " with key as " << key << std::endl;
+#endif
+        if(str_addr_A == 0){ //TBD, when is this condition true? When this is the 2nd access to the pc
+            str_addr_A = isb.assign_structural_addr();
+            isb.oci.update(addr_A, str_addr_A);
+        }
+        str_addr_B = isb.isb_train(str_addr_A, addr_B);
+    }
+
+    isb.update_training_unit(key, addr_B, str_addr_B);
+
+
+	return metadata_in;
+}
+
+//Neelu: added metadata_in argument to match with the prototype in cache.h, changed return type from void and added return statement
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+  // uncomment this line to see the information available to you when there is a cache fill event
+//  printf("%lld: Fill 0x%llx %d %d %d 0x%llx %d\n", get_current_cycle(0), addr, set, way, prefetch, evicted_addr, get_l2_mshr_occupancy(0));
+
+if(prefetch){
+uint32_t pref_type = metadata_in & 0xF00;
+pref_type = pref_type >> 8;
+
+uint64_t index = hash_bloom_l2(addr);
+if(stats_l2[cpu][pref_type].bl_request[index] == 1){
+    stats_l2[cpu][pref_type].bl_filled[index] = 1;
+    stats_l2[cpu][pref_type].bl_request[index] = 0;
+}
+	return metadata_in;
+}
+}
+//Neelu: Commenting this function as it in not declared in the ChampSim version I'm using and the body is empty anyway.
+
+/*void CACHE::inform_tlb_eviction(uint64_t insert_page_addr, uint64_t evict_page_addr)
+{
+}*/
+
+
+
+void CACHE::l2c_prefetcher_final_stats()
+{
+  printf("Prefetcher final stats\n");
+    cout << "Training Unit Size: " << isb.training_unit.size() << endl;
+    cout << "Addr table size: " << isb.oci.ps_map.size() << " " << isb.oci.sp_map.size() << endl;;
+    cout << endl << endl;
+    cout << "Triggers: " << total_access << endl;
+    cout << "No Prediction: " << no_prediction << " " << 100*(double)no_prediction/(double)total_access << endl;
+    cout << "Stream end: " << stream_end << endl;
+    cout << "No translation: " << no_translation << " " << 100*(double)no_translation/(double)total_access << endl;
+    cout << "Predictions: " << predictions << " " << 100*(double)predictions/(double)total_access << endl;
+    cout << endl << endl;
+    cout << "Stream divergence: " << isb.stream_divergence_count << " " << 100*(double)(isb.stream_divergence_count)/(total_access) << endl;
+    cout << "Stream divergence -- new stream: " << isb.stream_divergence_new_stream << endl;
+}

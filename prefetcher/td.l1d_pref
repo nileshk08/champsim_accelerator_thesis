@@ -1,0 +1,95 @@
+#include "cache.h"
+
+#include <map>
+
+//#define TRACE_DUMP		//Neelu: Addition Trace Dump prints
+
+map<uint64_t, uint64_t> last_accessed_address;	//Neelu: Stores last accessed address per IP.  
+
+uint64_t strides[11];
+int64_t positive[10] = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768};
+int64_t negative[10] = {-64, -128, -256, -512, -1024, -2048, -4096, -8192, -16384, -32768};
+
+
+void CACHE::l1d_prefetcher_initialize() 
+{
+	for(int i = 0; i < 11; i++)
+		strides[i] = 0;
+}
+
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
+{
+
+	#ifdef TRACE_DUMP
+	cout << "DEMAND:  IP: " << ip << "  CL Addr: " << (addr >> LOG2_BLOCK_SIZE) << "  Hit: " << unsigned(cache_hit) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+	#endif
+
+	if(last_accessed_address.find(ip) != last_accessed_address.end())
+	{
+		int64_t stride = ((addr >> LOG2_BLOCK_SIZE) - last_accessed_address[ip]);
+
+		for(int i = 0; i < 11; i++)
+		{
+			if(i == 10)
+			{
+				strides[i]++;
+				break;
+			}
+			else if(stride < positive[i] && stride > negative[i])
+			{
+				strides[i]++;
+				break;
+			}
+		}
+/*
+		if(stride < 64 && stride > -64)
+			strides_7bit++;
+		else if(stride < 256 && stride > -256)
+                        strides_9bit++;
+		else if(stride < 1024 && stride > -1024)
+                        strides_11bit++;
+		else if(stride < 8192 && stride > -8192)
+                        strides_14bit++;
+		else if(stride < 16384 && stride > -16384)
+                        strides_15bit++;
+		else if(stride < 32768 && stride > -32768)
+                        strides_16bit++;
+		else
+			strides_greater++;
+*/
+		#ifdef TRACE_DUMP
+		cout << "IP: "<< ip << "  Stride: " << stride << endl;
+		#endif
+	}
+	
+	last_accessed_address[ip] = addr >> LOG2_BLOCK_SIZE; 
+
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+
+	#ifdef TRACE_DUMP
+	cout << "FILL:  CL Addr: " << (addr >> LOG2_BLOCK_SIZE) << "  Prefetch: " << unsigned(prefetch) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+	#endif
+
+}
+
+void CACHE::l1d_prefetcher_final_stats()
+{
+
+	cout << endl;
+	cout<< " Count of 7 bit Strides: " << strides[0] << endl;
+	cout<< " Count of 8 bit Strides: " << strides[1] << endl;
+	cout<< " Count of 9 bit Strides: " << strides[2] << endl;
+	cout<< " Count of 10 bit Strides: " << strides[3] << endl;
+	cout<< " Count of 11 bit Strides: " << strides[4] << endl;
+	cout<< " Count of 12 bit Strides: " << strides[5] << endl;
+	cout<< " Count of 13 bit Strides: " << strides[6] << endl;
+	cout<< " Count of 14 bit Strides: " << strides[7] << endl;
+	cout<< " Count of 15 bit Strides: " << strides[8] << endl;
+	cout<< " Count of 16 bit Strides: " << strides[9] << endl;
+	cout<< " Count of Larger than 16 bit Strides: " << strides[10] << endl;
+	cout << endl;
+
+}

@@ -1,0 +1,9 @@
+
+gdb ./bin/bimodal-no-no-no-no-no-no-lru-2cpu-2accelerator
+
+r -warmup_instructions 0 -simulation_instructions 1000000 0 -traces accelerator_traces/server_014.champsimtrace.xz accelerator_traces/server_014.champsimtrace.xz accelerator_traces/server_014.champsimtrace.xz accelerator_traces/server_014.champsimtrace.xz
+
+
+r -warmup_instructions 0 -simulation_instructions 1000000 0 -traces accelerator_traces/server_014.champsimtrace.xz 0 accelerator_traces/server_014.champsimtrace.xz 1 accelerator_traces/server_014.champsimtrace.xz 2 accelerator_traces/server_014.champsimtrace.xz 3 accelerator_traces/server_014.champsimtrace.xz 4
+
+

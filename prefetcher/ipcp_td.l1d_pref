@@ -1,0 +1,906 @@
+
+/*
+For the Third Data Prefetching Championship - DPC3
+
+Instruction Pointer Classifying Prefetcher - IPCP
+Authors: 
+Samuel Pakalapati - samuelpakalapati@gmail.com
+Biswabandan Panda - biswap@cse.iitk.ac.in
+*/
+
+#include "ooo_cpu.h"
+#include "cache.h"
+
+#include <map>
+
+#define TRACE_DUMP              //Neelu: Addition Trace Dump prints
+
+map<uint64_t, uint64_t> last_accessed_address;  //Neelu: Stores last accessed address per IP.
+
+
+#define DO_PREF
+#define NUM_BLOOM_ENTRIES 4096
+#define NUM_IP_TABLE_L1_ENTRIES 1024
+#define NUM_DPT_ENTRIES 4096	// = 2^NUM_SIG_BITS
+#define NUM_GHB_ENTRIES 16
+#define NUM_SIG_BITS 12
+#define NUM_IP_INDEX_BITS 10
+#define NUM_IP_TAG_BITS 6
+#define NUM_PAGE_TAG_BITS 6
+#define S_TYPE 1                                            // stream
+#define CS_TYPE 2                                           // constant stride
+#define CPLX_TYPE 3                                         // complex stride
+#define NL_TYPE 4                                           // next line
+#define CPLX_DIST 0                                          
+#define GS_EVAL_ACCESS_INTERVAL 32  
+#define NUM_PG_TABLE_ENTRIES 4                                         
+
+// #define SIG_DEBUG_PRINT
+#ifdef SIG_DEBUG_PRINT
+#define SIG_DP(x) x
+#else
+#define SIG_DP(x)
+#endif
+
+class IP_TABLE_L1 {
+  public:
+    uint64_t ip_tag;
+    uint64_t last_page;                                     // last page seen by IP
+    uint64_t last_cl_offset;                                // last cl offset in the 4KB page
+    int64_t last_stride;                                    // last delta observed
+    uint16_t ip_valid;
+    int conf;                                               // CS conf
+    uint16_t signature;                                     // CPLX signature
+    uint16_t str_dir;                                       // stream direction
+    uint16_t str_valid;                                     // stream valid
+    uint16_t str_strength;                                  // stream strength
+    uint16_t pref_type;                                  // stream strength
+
+    IP_TABLE_L1 () {
+        ip_tag = 0;
+        last_page = 0;
+        last_cl_offset = 0;
+        last_stride = 0;
+        ip_valid = 0;
+        signature = 0;
+        conf = 0;
+        str_dir = 0;
+        str_valid = 0;
+        str_strength = 0;
+        pref_type = 0;
+    };
+};
+
+class DELTA_PRED_TABLE {
+public:
+    int delta;
+    int conf;
+
+    DELTA_PRED_TABLE () {
+        delta = 0;
+        conf = 0;
+    };        
+};
+
+
+class STAT_COLLECT {
+  public:
+    uint64_t useful;                                    
+    uint64_t filled;                                    
+    uint64_t misses;	//DOUBT
+    uint64_t polluted_misses;  	//DOUBT                               
+
+    uint8_t bl_filled[NUM_BLOOM_ENTRIES];		//DOUBT
+    uint8_t bl_request[NUM_BLOOM_ENTRIES];		//DOUBT
+
+    STAT_COLLECT () {
+        useful = 0;
+        filled = 0;
+        misses = 0;
+        polluted_misses = 0;
+
+        for(int i=0; i<NUM_BLOOM_ENTRIES; i++){
+            bl_filled[i] = 0;
+            bl_request[i] = 0;
+        }
+    };
+};
+
+class PAGE_TABLE {
+    public:
+        uint64_t page;
+        uint64_t spec_dense;
+        uint64_t train_dense;
+        uint64_t pos_count;
+        uint64_t neg_count;
+        uint64_t count;
+        uint64_t dir;
+        uint64_t lru;
+        uint8_t line_access[64];
+        PAGE_TABLE () {
+            page=0;
+            spec_dense=0;
+            train_dense=0;
+            pos_count=0;
+            neg_count=0;
+            count=0;
+            dir=0;
+            lru=0;
+            for(int i=0; i < 64; i++)
+                line_access[i]=0;
+        };
+};
+
+PAGE_TABLE pgtable [NUM_CPUS][NUM_PG_TABLE_ENTRIES];
+int acc_filled[NUM_CPUS][5];
+int acc_useful[NUM_CPUS][5];
+
+//ADDITION BY Neelu BEGIN
+//int pref_filled[NUM_CPUS][5];
+//int pref_useful[NUM_CPUS][5];
+//int pref_late[NUM_CPUS][5];
+
+//ADDITION BY Neelu END
+
+//int last_filled_in_epoch[NUM_CPUS][5] = {0,0,0,0,0};
+//int last_useful_in_epoch[NUM_CPUS][5] = {0,0,0,0,0};
+int acc[NUM_CPUS][5];
+int prefetch_degree[NUM_CPUS][5];
+int num_conflicts =0, num_throttled = 0;
+int test;
+
+uint64_t eval_buffer[NUM_CPUS][1024] = {};
+STAT_COLLECT stats[NUM_CPUS][5];     // for GS, CS, CPLX, NL and no class
+IP_TABLE_L1 trackers_l1[NUM_CPUS][NUM_IP_TABLE_L1_ENTRIES];
+DELTA_PRED_TABLE DPT_l1[NUM_CPUS][NUM_DPT_ENTRIES];
+uint64_t ghb_l1[NUM_CPUS][NUM_GHB_ENTRIES];
+uint64_t prev_cpu_cycle[NUM_CPUS];
+uint64_t num_misses[NUM_CPUS];
+float mpki[NUM_CPUS] = {0};
+int spec_nl[NUM_CPUS] = {0}, flag_nl[NUM_CPUS] = {0};
+uint64_t num_access[NUM_CPUS];
+
+int meta_counter[NUM_CPUS][4] = {0};                                                  // for book-keeping
+int total_count[NUM_CPUS] = {0};                                                  // for book-keeping
+
+uint16_t update_sig_l1(uint16_t old_sig, int delta){
+    uint16_t new_sig = 0;
+    int sig_delta = 0;
+
+// 7-bit sign magnitude form, since we need to track deltas from +63 to -63
+    sig_delta = (delta < 0) ? (((-1) * delta) + (1 << 6)) : delta;
+    new_sig = ((old_sig << 1) ^ sig_delta) & ((1 << NUM_SIG_BITS)-1);                     // 12-bit signature
+
+    return new_sig;
+}
+
+uint32_t encode_metadata(int stride, uint16_t type, int spec_nl){
+
+uint32_t metadata = 0;
+
+// first encode stride in the last 8 bits of the metadata
+if(stride > 0)
+    metadata = stride;
+else
+    metadata = ((-1*stride) | 0b1000000);
+
+// encode the type of IP in the next 4 bits 			//DOUBT - why 4 bits for the type of IP? Because one IP can belong to multiple classes. 
+metadata = metadata | (type << 8);
+
+// encode the speculative NL bit in the next 1 bit
+metadata = metadata | (spec_nl << 12);
+
+return metadata;
+
+}
+
+void check_for_stream_l1(int index, uint64_t cl_addr, uint8_t cpu){
+
+	//So here it's checked whether cache lines are accessed consecutively in succeeding or preceeding manner or not. 
+
+int pos_count=0, neg_count=0, count=0;
+uint64_t check_addr = cl_addr;
+
+// check for +ve stream
+    for(int i=0; i<NUM_GHB_ENTRIES; i++){
+        check_addr--;
+        for(int j=0; j<NUM_GHB_ENTRIES; j++)
+            if(check_addr == ghb_l1[cpu][j]){
+                pos_count++;
+                break;
+            }
+    }
+
+check_addr = cl_addr;
+// check for -ve stream
+    for(int i=0; i<NUM_GHB_ENTRIES; i++){
+        check_addr++;
+        for(int j=0; j<NUM_GHB_ENTRIES; j++)
+            if(check_addr == ghb_l1[cpu][j]){
+                neg_count++;
+                break;
+            }
+    }
+
+    if(pos_count > neg_count){                                // stream direction is +ve
+        trackers_l1[cpu][index].str_dir = 1;
+        count = pos_count;
+    }
+    else{                                                     // stream direction is -ve
+        trackers_l1[cpu][index].str_dir = 0;
+        count = neg_count;
+    }
+
+if(count > NUM_GHB_ENTRIES/2){                                // stream is detected
+    trackers_l1[cpu][index].str_valid = 1;
+    if(count >= (NUM_GHB_ENTRIES*3)/4)                        // stream is classified as strong if more than 3/4th entries belong to stream
+        trackers_l1[cpu][index].str_strength = 1;
+}
+else{
+    if(trackers_l1[cpu][index].str_strength == 0)             // if identified as weak stream, we need to reset
+        trackers_l1[cpu][index].str_valid = 0;
+}
+
+}
+
+int update_conf(int stride, int pred_stride, int conf){
+    if(stride == pred_stride){             // use 2-bit saturating counter for confidence
+        conf++;
+        if(conf > 3)
+            conf = 3;
+    } else {
+        conf--;
+        if(conf < 0)
+            conf = 0;
+    }
+
+return conf;
+}
+
+//DOUBT - hash bloom - read the research paper ???
+
+uint64_t hash_bloom(uint64_t addr){
+    uint64_t first_half, sec_half;
+    first_half = addr & 0xFFF;
+    sec_half = (addr >> 12) & 0xFFF;
+ if((first_half ^ sec_half) >= 4096)
+     assert(0);
+    return ((first_half ^ sec_half) & 0xFFF);
+}
+
+uint64_t hash_page(uint64_t addr){
+    uint64_t hash;
+    while(addr != 0){
+        hash = hash ^ addr;
+        addr = addr >> 6;
+    }
+
+    return hash & ((1 << NUM_PAGE_TAG_BITS)-1);
+}
+
+
+//DOUBTS in all lines bloom.
+void stat_col_L1(uint64_t addr, uint8_t cache_hit, uint8_t cpu, uint64_t ip){
+    uint64_t index = hash_bloom(addr);
+    int ip_index = ip & ((1 << NUM_IP_INDEX_BITS)-1);
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+
+
+    for(int i=0; i<5; i++){
+        if(cache_hit){
+            if(stats[cpu][i].bl_filled[index] == 1){
+                stats[cpu][i].useful++;
+                stats[cpu][i].filled++;
+                stats[cpu][i].bl_filled[index] = 0;
+            }
+        } else {
+            if(ip_tag == trackers_l1[cpu][ip_index].ip_tag){
+                if(trackers_l1[cpu][ip_index].pref_type == i)
+                    stats[cpu][i].misses++;
+                if(stats[cpu][i].bl_filled[index] == 1){
+                    stats[cpu][i].polluted_misses++;
+                    stats[cpu][i].filled++;
+                    stats[cpu][i].bl_filled[index] = 0;
+                }
+            }
+        }
+
+        if(num_misses[cpu] % 1024 == 0){
+            for(int j=0; j<NUM_BLOOM_ENTRIES; j++){
+                stats[cpu][i].filled += stats[cpu][i].bl_filled[j];
+                stats[cpu][i].bl_filled[j] = 0;
+                stats[cpu][i].bl_request[j] = 0;
+            }
+        }
+    }
+}
+
+
+void CACHE::l1d_prefetcher_initialize() 
+{
+    for( int i=0; i <NUM_PG_TABLE_ENTRIES; i++)
+        pgtable[cpu][i].lru = i;
+    for( int i=0; i <NUM_CPUS; i++)
+    {
+        prefetch_degree[cpu][0] = 0;
+        prefetch_degree[cpu][1] = 8;
+        prefetch_degree[cpu][2] = 2;
+        prefetch_degree[cpu][3] = 2;
+        prefetch_degree[cpu][4] = 1;
+
+    }
+
+ 
+}
+
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
+{
+
+    uint64_t curr_page = hash_page(addr >> LOG2_PAGE_SIZE); //Reason for hashing? Maybe to reduce conflicts of Tag. But is it really required? 
+    // uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+
+	#ifdef TRACE_DUMP
+        cout << "DEMAND:  IP: " << ip << "  CL Addr: " << (addr >> LOG2_BLOCK_SIZE) << "  Hit: " << unsigned(cache_hit) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+        #endif
+
+
+	if(last_accessed_address.find(ip) != last_accessed_address.end())
+        {
+		int stride = ((addr >> LOG2_BLOCK_SIZE) - last_accessed_address[ip]);
+                #ifdef TRACE_DUMP
+                cout << "IP: "<< ip << "  Stride: " << stride << endl;
+		#endif
+        }
+
+        last_accessed_address[ip] = addr >> LOG2_BLOCK_SIZE;
+
+
+	//cout<<"Operate CL Addr: " << cl_addr << " Cycle: " << current_core_cycle[cpu] << " Hit: "<< unsigned(cache_hit) << endl;
+
+    uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
+    uint16_t signature = 0, last_signature = 0;
+    //int prefetch_degree = 0;
+    int spec_nl_threshold = 0;
+    int num_prefs = 0;
+    uint32_t metadata=0;
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+    uint64_t bl_index = 0;
+
+if(NUM_CPUS == 1){
+    //prefetch_degree = 3;
+    spec_nl_threshold = 50; 
+} else {                                    // tightening the degree and mpki constraints for multi-core
+    //prefetch_degree = 2;
+    spec_nl_threshold = 40;
+}
+
+// update miss counter
+if(cache_hit == 0 && warmup_complete[cpu] == 1)
+    num_misses[cpu] += 1;
+num_access[cpu] += 1;
+stat_col_L1(addr, cache_hit, cpu, ip);
+// update spec nl bit when num misses crosses certain threshold
+if(num_misses[cpu] % 256 == 0 && cache_hit == 0){
+    mpki[cpu] = ((num_misses[cpu]*1000.0)/(ooo_cpu[cpu].num_retired - ooo_cpu[cpu].warmup_instructions));
+    
+  /*  acc_useful[4]=acc_useful[4]/2.0 + (pref_useful[cpu][4]-acc_useful[4])/2.0;
+    acc_filled[4]=acc_filled[4]/2.0 + (pref_filled[cpu][4]-acc_filled[4])/2.0;
+
+    
+    if(acc_filled[4] != 0)
+        acc[4]=100.0*acc_useful[4]/acc_filled[4];
+    else
+        acc[4] = 50;
+
+    float total_acc = 100.0 * pf_useful/pf_fill;
+
+    if(acc[4] > 75 )
+        spec_nl_threshold = 15;
+    else if(acc[4] < 40 )
+        spec_nl_threshold = 10;
+    else if(acc[4] < 20)
+        spec_nl_threshold = 5;
+*/
+    if(mpki[cpu] > spec_nl_threshold)
+        spec_nl[cpu] = 0;
+    else
+        spec_nl[cpu] = 1;
+
+    //if(total_acc>90 && acc[4] < 20 && spec_nl_threshold == 5)
+      //  spec_nl[cpu] = 1;
+        
+}
+    // num_misses[cpu] = 0;
+
+//Updating prefetch degree based on accuracy
+for(int i=0;i<5;i++)	//Why are there 5 iterations? Say one iteration per class, right?
+    {       
+        if(pref_filled[cpu][i]%256 == 0)
+        {
+    
+        acc_useful[cpu][i]=acc_useful[cpu][i]/2.0 + (pref_useful[cpu][i] - acc_useful[cpu][i])/2.0;
+        acc_filled[cpu][i]=acc_filled[cpu][i]/2.0 + (pref_filled[cpu][i] - acc_filled[cpu][i])/2.0;
+
+        if(acc_filled[cpu][i] != 0)
+            acc[cpu][i]=100.0*acc_useful[cpu][i]/(acc_filled[cpu][i]);
+        else 
+            acc[cpu][i] = 60;
+
+
+        if(acc[cpu][i] > 75)
+        {
+	    num_throttled++;
+            prefetch_degree[cpu][i]++;
+            if(i == 1)	//So i=1 corresponds to global stream class
+            {
+                prefetch_degree[cpu][i]++;
+                if(prefetch_degree[cpu][i] > 8)
+                    prefetch_degree[cpu][i] = 8; 
+            }
+            else if(prefetch_degree[cpu][i] > 3)
+                prefetch_degree[cpu][i] = 3;
+        }
+        else if(acc[cpu][i] < 40)
+        {
+	    num_throttled++;
+            prefetch_degree[cpu][i]--;
+            if(i == 1)
+                prefetch_degree[cpu][i]--;
+            if(prefetch_degree[cpu][i] < 1)
+                prefetch_degree[cpu][i] = 1;
+        }
+
+    }
+}
+
+// calculate the index bit
+    int index = ip & ((1 << NUM_IP_INDEX_BITS)-1);
+    if(trackers_l1[cpu][index].ip_tag != ip_tag){               // new/conflict IP
+        if(trackers_l1[cpu][index].ip_valid == 0){              // if valid bit is zero, update with latest IP info
+        num_conflicts++;
+        trackers_l1[cpu][index].ip_tag = ip_tag;
+        trackers_l1[cpu][index].last_page = curr_page;
+        trackers_l1[cpu][index].last_cl_offset = cl_offset;
+        trackers_l1[cpu][index].last_stride = 0;
+        trackers_l1[cpu][index].signature = 0;
+        trackers_l1[cpu][index].conf = 0;
+        trackers_l1[cpu][index].str_valid = 0;
+        trackers_l1[cpu][index].str_strength = 0;
+        trackers_l1[cpu][index].str_dir = 0;
+        trackers_l1[cpu][index].pref_type = 0;
+        trackers_l1[cpu][index].ip_valid = 1;
+    } else {                                                    // otherwise, reset valid bit and leave the previous IP as it is
+        trackers_l1[cpu][index].ip_valid = 0;
+    }
+
+    // issue a next line prefetch upon encountering new IP
+        // uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE; // BASE NL=1, changing it to 3
+        // metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
+        // trackers_l1[cpu][index].pref_type = 0;
+        // prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+        // meta_counter[cpu][3]++;
+        // total_count[cpu]++;
+        return;
+    }
+    else {                                                     // if same IP encountered, set valid bit
+        trackers_l1[cpu][index].ip_valid = 1;
+    }
+    
+
+    // calculate the stride between the current address and the last address
+    int64_t stride = 0;
+    if (cl_offset > trackers_l1[cpu][index].last_cl_offset)
+        stride = cl_offset - trackers_l1[cpu][index].last_cl_offset;
+    else {
+        stride = trackers_l1[cpu][index].last_cl_offset - cl_offset;
+        stride *= -1;
+    }
+
+    // don't do anything if same address is seen twice in a row
+    if (stride == 0)
+        return;
+
+    int c=0, flag = 0;
+
+    //Checking if IP is already classified as a part of the GS class, so that for the new region we will set the tentative (spec_dense) bit.
+    for(int i = 0; i < NUM_PG_TABLE_ENTRIES; i++)
+    {
+        if(pgtable[cpu][i].page == trackers_l1[cpu][index].last_page)
+        {
+            if(pgtable[cpu][i].train_dense == 1)
+                flag = 1;
+            break;
+        }
+    }
+    for(c=0; c < NUM_PG_TABLE_ENTRIES; c++)
+    {
+        if(curr_page == pgtable[cpu][c].page)
+        {
+            if(pgtable[cpu][c].line_access[cl_offset] == 0)
+            {
+                pgtable[cpu][c].line_access[cl_offset] = 1;
+                pgtable[cpu][c].count++;
+            }
+            if(stride>0)
+                pgtable[cpu][c].pos_count++;
+            else
+                pgtable[cpu][c].neg_count++;
+
+            if(pgtable[cpu][c].train_dense == 0)
+            {
+                if(pgtable[cpu][c].count > 45)
+                {       
+                    pgtable[cpu][c].train_dense = 1;   
+                }
+            }
+            if (flag == 1)
+                pgtable[cpu][c].spec_dense = 1;
+            if(pgtable[cpu][c].spec_dense == 1 || pgtable[cpu][c].train_dense == 1)
+            {
+                if(pgtable[cpu][c].pos_count > pgtable[cpu][c].neg_count)
+                    pgtable[cpu][c].dir = 1;
+                else
+                    pgtable[cpu][c].dir = 0;
+                trackers_l1[cpu][index].str_valid = 1;
+                trackers_l1[cpu][index].str_strength = 1;
+                
+                trackers_l1[cpu][index].str_dir = pgtable[cpu][c].dir;
+            }
+            else
+                trackers_l1[cpu][index].str_valid = 0; 
+            
+            break;
+        }
+    }
+    //curr page has no entry in pg_table. Then replace lru.
+    if(c== NUM_PG_TABLE_ENTRIES)
+    {
+        //check lru
+        for( c=0;c<NUM_PG_TABLE_ENTRIES;c++)
+        {
+            if(pgtable[cpu][c].lru == (NUM_PG_TABLE_ENTRIES-1))
+                break;
+        }
+        for (int i=0; i<NUM_PG_TABLE_ENTRIES; i++) {
+            if (pgtable[cpu][i].lru < pgtable[cpu][c].lru)
+                pgtable[cpu][i].lru++;
+        }
+        if (flag == 1)
+            pgtable[cpu][c].spec_dense =1;
+        else
+            pgtable[cpu][c].spec_dense = 0;
+        
+        pgtable[cpu][c].page = curr_page; 
+        pgtable[cpu][c].train_dense = 0;
+        pgtable[cpu][c].pos_count = 0;
+        pgtable[cpu][c].neg_count = 0;
+        pgtable[cpu][c].count = 0;
+        pgtable[cpu][c].dir = 0;
+        pgtable[cpu][c].lru = 0;
+        for(int i=0; i < 64; i++)
+                pgtable[cpu][c].line_access[i]=0;
+    }
+    
+    
+
+// page boundary learning
+if(curr_page != trackers_l1[cpu][index].last_page){
+test++;
+    if(stride < 0)
+        stride += 64;
+    else
+        stride -= 64;
+}
+
+
+// update constant stride(CS) confidence
+trackers_l1[cpu][index].conf = update_conf(stride, trackers_l1[cpu][index].last_stride, trackers_l1[cpu][index].conf);
+
+// update CS only if confidence is zero
+if(trackers_l1[cpu][index].conf == 0)                      
+    trackers_l1[cpu][index].last_stride = stride;
+
+last_signature = trackers_l1[cpu][index].signature;
+// update complex stride(CPLX) confidence
+DPT_l1[cpu][last_signature].conf = update_conf(stride, DPT_l1[cpu][last_signature].delta, DPT_l1[cpu][last_signature].conf);
+
+// update CPLX only if confidence is zero
+if(DPT_l1[cpu][last_signature].conf == 0)
+    DPT_l1[cpu][last_signature].delta = stride;
+
+// calculate and update new signature in IP table
+signature = update_sig_l1(last_signature, stride);
+trackers_l1[cpu][index].signature = signature;
+
+// check GHB for stream IP
+// if(num_misses[cpu] % GS_EVAL_ACCESS_INTERVAL == 0)
+//check_for_stream_l1(index, cl_addr, cpu);
+
+
+
+SIG_DP(
+cout << ip << ", " << cache_hit << ", " << cl_addr << ", " << addr << ", " << stride << "; ";
+cout << last_signature<< ", "  << DPT_l1[cpu][last_signature].delta<< ", "  << DPT_l1[cpu][last_signature].conf << "; ";
+cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << trackers_l1[cpu][index].conf << ", " << "; ";
+);
+
+// int flag = 0;
+    if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
+        // for stream, prefetch with twice the usual degree
+            if(prefetch_degree[cpu][1] < 3)
+                flag = 1;
+            meta_counter[cpu][0]++;
+            total_count[cpu]++;
+        for (int i=0; i<prefetch_degree[cpu][1]; i++) {
+            uint64_t pf_address = 0;
+
+            if(trackers_l1[cpu][index].str_dir == 1){                   // +ve stream
+                pf_address = (cl_addr + i + 1) << LOG2_BLOCK_SIZE;
+                metadata = encode_metadata(1, S_TYPE, spec_nl[cpu]);    // stride is 1
+            }
+            else{                                                       // -ve stream
+                pf_address = (cl_addr - i - 1) << LOG2_BLOCK_SIZE;
+                metadata = encode_metadata(-1, S_TYPE, spec_nl[cpu]);   // stride is -1
+            }
+
+            if(acc[cpu][1] < 75)
+                metadata = encode_metadata(0, S_TYPE, spec_nl[cpu]);
+            // Check if prefetch address is in same 4 KB page
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
+                break;
+            }
+
+            trackers_l1[cpu][index].pref_type = S_TYPE;
+            bl_index = hash_bloom(pf_address);
+            stats[cpu][S_TYPE].bl_request[bl_index] = 1;
+            // if(spec_nl[cpu] == 1)
+            #ifdef DO_PREF
+	    	#ifdef TRACE_DUMP
+	        cout << "PREFETCH GS:  IP: " << ip << "  CL Addr: " << (pf_address >> LOG2_BLOCK_SIZE) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+        	#endif
+            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+	    //cout<<"PF Line ADDR: " << (pf_address >> LOG2_BLOCK_SIZE) << " Cycle: " << current_core_cycle[cpu] << endl;
+            #endif
+            num_prefs++;
+            SIG_DP(cout << "1, ");
+            }
+    } else 
+        flag = 1;
+
+
+    if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0 && flag == 1){            // CS IP  
+        meta_counter[cpu][1]++; 
+        total_count[cpu]++;
+        
+        if(prefetch_degree[cpu][2] < 2)
+            flag = 1;
+        else
+            flag = 0;
+
+        for (int i=0; i<prefetch_degree[cpu][2]; i++) {
+            uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
+
+            // Check if prefetch address is in same 4 KB page
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
+                break;
+            }
+
+            trackers_l1[cpu][index].pref_type = CS_TYPE;
+            bl_index = hash_bloom(pf_address);
+            stats[cpu][CS_TYPE].bl_request[bl_index] = 1;
+            if(acc[cpu][2] > 75)                
+                metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
+            else
+                metadata = encode_metadata(0, CS_TYPE, spec_nl[cpu]);
+            // if(spec_nl[cpu] == 1)
+            #ifdef DO_PREF
+		#ifdef TRACE_DUMP
+                cout << "PREFETCH CS:  IP: " << ip << "  CL Addr: " << (pf_address >> LOG2_BLOCK_SIZE) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+                #endif
+            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+	    //cout<<"PF Line ADDR: " << (pf_address >> LOG2_BLOCK_SIZE) << " Cycle: " << current_core_cycle[cpu] << endl;
+            #endif
+            num_prefs++;
+            SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
+        }
+    } else 
+        flag = 1;
+
+    if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0 && flag == 1) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        meta_counter[cpu][2]++;
+        total_count[cpu]++;
+        
+        for (i=0; i<prefetch_degree[cpu][3] + CPLX_DIST; i++) {
+            pref_offset += DPT_l1[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+            // Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
+                    (DPT_l1[cpu][signature].conf == -1) ||
+                    (DPT_l1[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+
+            // we are not prefetching at L2 for CPLX type, so encode delta as 0
+            trackers_l1[cpu][index].pref_type = CPLX_TYPE;
+            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
+            if(DPT_l1[cpu][signature].conf > 0 && i >= CPLX_DIST){                                 // prefetch only when conf>0 for CPLX
+                bl_index = hash_bloom(pf_address);
+                stats[cpu][CPLX_TYPE].bl_request[bl_index] = 1;
+                trackers_l1[cpu][index].pref_type = 3;
+                #ifdef DO_PREF
+		#ifdef TRACE_DUMP
+                cout << "PREFETCH CPLX:  IP: " << ip << "  CL Addr: " << (pf_address >> LOG2_BLOCK_SIZE) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+                #endif
+                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+                //cout<<"PF Line ADDR: " << (pf_address >> LOG2_BLOCK_SIZE) << " Cycle: " << current_core_cycle[cpu] << endl;
+		#endif
+                num_prefs++;
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
+        }
+    } 
+
+
+
+// if no prefetches are issued till now, speculatively issue a next_line prefetch
+if(num_prefs == 0 && spec_nl[cpu] == 1){
+    if(flag_nl[cpu] == 0)
+        flag_nl[cpu] = 1;
+    else {
+        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE; 
+        bl_index = hash_bloom(pf_address);
+        stats[cpu][NL_TYPE].bl_request[bl_index] = 1; 
+        metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
+        #ifdef DO_PREF
+		#ifdef TRACE_DUMP
+                cout << "PREFETCH NL:  IP: " << ip << "  CL Addr: " << (pf_address >> LOG2_BLOCK_SIZE) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+                #endif
+        prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+	//cout<<"PF Line ADDR: " << (pf_address >> LOG2_BLOCK_SIZE) << " Cycle: " << current_core_cycle[cpu] << endl;
+        #endif
+        trackers_l1[cpu][index].pref_type = NL_TYPE;
+        meta_counter[cpu][3]++;
+        total_count[cpu]++;
+        SIG_DP(cout << "1, ");
+
+        if(acc[cpu][4] < 40)
+        flag_nl[cpu] = 0;
+    }                                       // NL IP
+}
+
+
+SIG_DP(cout << endl);
+
+// update the IP table entries
+trackers_l1[cpu][index].last_cl_offset = cl_offset;
+trackers_l1[cpu][index].last_page = curr_page;
+
+// update GHB
+// search for matching cl addr
+int ghb_index=0;
+for(ghb_index = 0; ghb_index < NUM_GHB_ENTRIES; ghb_index++)
+    if(cl_addr == ghb_l1[cpu][ghb_index])
+        break;
+// only update the GHB upon finding a new cl address
+if(ghb_index == NUM_GHB_ENTRIES){
+for(ghb_index=NUM_GHB_ENTRIES-1; ghb_index>0; ghb_index--)
+    ghb_l1[cpu][ghb_index] = ghb_l1[cpu][ghb_index-1];
+ghb_l1[cpu][0] = cl_addr;
+}
+
+return;
+}
+
+void CACHE::l1d_prefetcher_cache_fill(/*uint64_t v_addr,*/ uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+
+	#ifdef TRACE_DUMP
+        cout << "FILL:  CL Addr: " << (addr >> LOG2_BLOCK_SIZE) << "  Prefetch: " << unsigned(prefetch) << "  Cycle: " << current_core_cycle[cpu] <<endl;
+        #endif
+
+if(prefetch){
+ 
+//cout << "Fill CL Addr: " << (v_addr >> LOG2_BLOCK_SIZE) << " Cycle: " << current_core_cycle[cpu] << endl;
+
+uint32_t pref_type = metadata_in & 0xF00;
+pref_type = pref_type >> 8;
+
+uint64_t index = hash_bloom(addr);
+if(stats[cpu][pref_type].bl_request[index] == 1){
+    stats[cpu][pref_type].bl_filled[index] = 1;
+    stats[cpu][pref_type].bl_request[index] = 0;
+}
+}
+
+}
+void CACHE::l1d_prefetcher_final_stats()
+{
+cout << endl;
+
+uint64_t total_request=0, total_polluted=0, total_useful=0, total_late = 0;
+
+for(int i=0; i<5; i++){
+    total_request += pref_filled[cpu][i]; 
+    total_polluted += stats[cpu][i].polluted_misses; 
+    total_useful += pref_useful[cpu][i]; 
+    total_late += pref_late[cpu][i]; 
+}
+
+/*cout << "class 0: " << endl;
+//cout << "class 0:times selected: " << meta_counter[cpu][0] << endl;
+cout << "class 0:pref_filled: " << pref_filled[cpu][0] << endl;
+cout << "class 0:pref_useful: " << pref_useful[cpu][0] << endl;
+cout << "class 0:pref_late: " << pref_late[cpu][0] << endl;
+cout << "class 0:misses: " << stats[cpu][0].misses << endl;
+cout << "class 0:misses_by_poll: " << stats[cpu][0].polluted_misses << endl;
+cout << endl;*/
+
+cout << "stream: " << endl;
+cout << "stream:times selected: " << meta_counter[cpu][0] << endl;
+cout << "stream:pref_filled: " << pref_filled[cpu][1] << endl;
+cout << "stream:pref_useful: " << pref_useful[cpu][1] << endl;
+cout << "stream:pref_late: " << pref_late[cpu][1] << endl;
+cout << "stream:misses: " << stats[cpu][1].misses << endl;
+cout << "stream:misses_by_poll: " << stats[cpu][1].polluted_misses << endl;
+cout << endl;
+
+cout << "CS: " << endl;
+cout << "CS:times selected: " << meta_counter[cpu][1] << endl;
+cout << "CS:pref_filled: " << pref_filled[cpu][2] << endl;
+cout << "CS:pref_useful: " << pref_useful[cpu][2] << endl;
+cout << "CS:pref_late: " << pref_late[cpu][2] << endl;
+cout << "CS:misses: " << stats[cpu][2].misses << endl;
+cout << "CS:misses_by_poll: " << stats[cpu][2].polluted_misses << endl;
+cout << endl;
+
+cout << "CPLX: " << endl;
+cout << "CPLX:times selected: " << meta_counter[cpu][2] << endl;
+cout << "CPLX:pref_filled: " << pref_filled[cpu][3] << endl;
+cout << "CPLX:pref_useful: " << pref_useful[cpu][3] << endl;
+cout << "CPLX:pref_late: " << pref_late[cpu][3] << endl;
+cout << "CPLX:misses: " << stats[cpu][3].misses << endl;
+cout << "CPLX:misses_by_poll: " << stats[cpu][3].polluted_misses << endl;
+cout << endl;
+
+cout << "NL_L1: " << endl;
+cout << "NL:times selected: " << meta_counter[cpu][3] << endl;
+cout << "NL:pref_filled: " << pref_filled[cpu][4] << endl;
+cout << "NL:pref_useful: " << pref_useful[cpu][4] << endl;
+cout << "NL:pref_late: " << pref_late[cpu][4] << endl;
+cout << "NL:misses: " << stats[cpu][4].misses << endl;
+cout << "NL:misses_by_poll: " << stats[cpu][4].polluted_misses << endl;
+cout << endl;
+
+
+cout << "total selections: " << total_count[cpu] << endl;
+cout << "total_filled: " << pf_fill << endl;
+cout << "total_useful: " << pf_useful << endl;
+cout << "total_late: " << total_late << endl;
+cout << "total_polluted: " << total_polluted << endl;
+cout << "total_misses_after_warmup: " << num_misses[cpu] << endl;
+
+cout<<"conflicts: " << num_conflicts <<endl;
+cout<<"throttled times: " << num_throttled << endl;
+
+/*cout<<"Early 0-100: "<< early_pref[0] << endl;
+cout<<"Early 100-250: "<< early_pref[1] << endl;
+cout<<"Early 250-500: "<< early_pref[2] << endl;
+cout<<"Early 500-750: "<< early_pref[3] << endl;
+cout<<"Early 750-1000: "<< early_pref[4] << endl;
+cout<<"Early 1000-2500: "<< early_pref[5] << endl;
+cout<<"Early 2500-5000: "<< early_pref[6] << endl;
+cout<<"Early 5000-10000: "<< early_pref[7] << endl;
+cout<<"Early 10000-20000: "<< early_pref[8] << endl;
+cout<<"Early 20000-50000 "<< early_pref[9] << endl;
+cout<<"Early 50000-100000: "<< early_pref[10] << endl;
+cout<<"Early 100000-more: "<< early_pref[11] << endl; */
+
+cout << endl;
+
+cout << "test: " << test << endl;
+}

@@ -1,0 +1,148 @@
+//
+// From Data Prefetching Championship Simulator 2
+// Seth Pugsley, seth.h.pugsley@intel.com
+//
+
+/*
+
+	This file describes a constant stride prefetcher for DTLB.
+	Virtual address space is divided into 512KB region-size and region_ID will be used for indexing
+
+ */
+
+#include "cache.h"
+
+#define REGION_TRACKER_COUNT 4096
+//#define LOG2_REGION_SIZE 28	// 12(page-size)+9(ASID)+7(region-offset)
+#define PREFETCH_DEGREE 1
+
+class REGION_TRACKER {
+  public:
+    // the region we're tracking
+    uint64_t region_ID;
+
+    // the last page address accessed in this region
+    uint64_t last_cl_addr;
+
+    // the stride between the last two page addresses accessed in the same region
+    int64_t last_stride;
+
+    // use LRU to evict old IP trackers
+    uint32_t lru;
+
+    REGION_TRACKER () {
+        region_ID = 0;
+        last_cl_addr = 0;
+        last_stride = 0;
+        lru = 0;
+    };
+};
+
+REGION_TRACKER trackers[REGION_TRACKER_COUNT];
+
+void CACHE::dtlb_prefetcher_initialize() 
+{
+    cout << "CPU " << cpu << " DTLB region-based constant stride prefetcher" << endl;
+    for (int i=0; i<REGION_TRACKER_COUNT; i++)
+        trackers[i].lru = i;
+}
+
+void CACHE::dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction)
+{
+
+    uint8_t LOG2_REGION_SIZE;
+    if(knob_cloudsuite)
+	LOG2_REGION_SIZE = 28;	//12(page-size)+9(ASID)+7(region-offset)
+    else
+	LOG2_REGION_SIZE = 19;
+
+    // check for a tracker hit
+    uint64_t cl_addr = addr >> LOG2_PAGE_SIZE;
+
+    int index = -1;
+    for (index=0; index<REGION_TRACKER_COUNT; index++) {
+        if (trackers[index].region_ID ==  addr >> LOG2_REGION_SIZE)
+            break;
+    }
+
+    // this is a new region_ID that doesn't have a tracker yet, so allocate one
+    if (index == REGION_TRACKER_COUNT) {
+
+        for (index=0; index<REGION_TRACKER_COUNT; index++) {
+            if (trackers[index].lru == (REGION_TRACKER_COUNT-1)) //@DOUBT-It should search for empty entry(lru==index)
+                break;
+        }
+
+        trackers[index].region_ID = addr >> LOG2_REGION_SIZE;
+        trackers[index].last_cl_addr = cl_addr;
+        trackers[index].last_stride = 0;
+	
+	//DP(if(warmup_complete[cpu]){
+  	//cout << "[REGION_STRIDE] MISS index: " << index << " lru: " << trackers[index].lru << " ip: " << hex << ip << " cl_addr: " << cl_addr << "region-ID: " << (cl_addr>>7) <<  dec << endl;
+	//});
+        for (int i=0; i<REGION_TRACKER_COUNT; i++) {
+            if (trackers[i].lru < trackers[index].lru)
+                trackers[i].lru++;
+        }
+        trackers[index].lru = 0;
+
+        return;
+    }
+
+    // sanity check
+    // at this point we should know a matching tracker index
+    if (index == -1)
+        assert(0);
+
+    // calculate the stride between the current page address and the last page address
+    // this bit appears overly complicated because we're calculating
+    // differences between unsigned address variables
+    int64_t stride = 0;
+    if (cl_addr > trackers[index].last_cl_addr)
+        stride = cl_addr - trackers[index].last_cl_addr;
+    else {
+        stride = trackers[index].last_cl_addr - cl_addr;
+        stride *= -1;
+    }
+
+    //DP(if(warmup_complete[cpu]){
+    //cout << "[REGION_STRIDE] HIT  index: " << index << " lru: " << trackers[index].lru << " ip: " << hex << ip << " cl_addr: " << cl_addr << "region_ID: " << trackers[index].region_ID << dec << " stride: " << stride << endl;
+//});
+    // don't do anything if we somehow saw the same address twice in a row
+    if (stride == 0)
+        return ;
+
+    // only do any prefetching if there's a pattern of seeing the same
+    // stride more than once
+    /* @Vasudha - Constant stride in DTLB translation pattern looks like: +x, -x, +x, -x. So, if the absolute value of current stride and last stride are same, we should continue prefetching. So, if last_stride is +x and current stride is -x, next prefetch stride should be +x*/
+    if (stride == trackers[index].last_stride || stride*(-1)==trackers[index].last_stride) {
+
+        // do some prefetching
+        for (int i=0; i<PREFETCH_DEGREE; i++) {
+            uint64_t pf_address = (cl_addr + (trackers[index].last_stride*(i+1))) << LOG2_PAGE_SIZE;
+
+	    prefetch_translation(ip, pf_address, FILL_DTLB, 0, prefetch_id, instruction);
+        }
+    }
+
+    trackers[index].last_cl_addr = cl_addr;
+    trackers[index].last_stride = stride;
+
+    for (int i=0; i<REGION_TRACKER_COUNT; i++) {
+        if (trackers[i].lru < trackers[index].lru)
+            trackers[i].lru++;
+    }
+    trackers[index].lru = 0;
+
+    
+}
+
+void CACHE::dtlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+  //return metadata_in;
+}
+
+void CACHE::dtlb_prefetcher_final_stats()
+{
+    cout << "CPU " << cpu << " DTLB Region-based stride prefetcher final stats" << endl;
+}

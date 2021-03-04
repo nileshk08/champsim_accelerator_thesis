@@ -1,0 +1,1354 @@
+#include "cache.h"
+#include "spp_tuned_aggr.h"
+
+#define DO_CPLX_PREF		//Uncomment to turn CPLX prefetching on
+
+#define DO_PREF
+#define NUM_BLOOM_ENTRIES 4096
+#define NUM_IP_TABLE_L2_ENTRIES 1024
+#define NUM_IP_INDEX_BITS_L2 10
+#define NUM_IP_TAG_BITS_L2 6
+#define S_TYPE 1                                            // stream
+#define CS_TYPE 2                                           // constant stride
+#define CPLX_TYPE 3                                         // complex stride
+#define NL_TYPE 4                                           // next line
+
+
+// #define SIG_DEBUG_PRINT_L2
+#ifdef SIG_DEBUG_PRINT_L2
+#define SIG_DP(x) x
+#else
+#define SIG_DP(x)
+#endif
+
+
+SIGNATURE_TABLE ST;
+PATTERN_TABLE   PT;
+PREFETCH_FILTER FILTER;
+GLOBAL_REGISTER GHR;
+int depth_track[30];
+int filter_skip;
+int depth_lost_at_filter[30];
+int depth_lost_at_page[30];
+int prefetch_q_full;
+
+
+
+class STAT_COLLECT {
+  public:
+    uint64_t useful;
+    uint64_t filled;
+    uint64_t misses;
+    uint64_t polluted_misses;
+
+    uint8_t bl_filled[NUM_BLOOM_ENTRIES];
+    uint8_t bl_request[NUM_BLOOM_ENTRIES];
+
+    STAT_COLLECT () {
+        useful = 0;
+        filled = 0;
+        misses = 0;
+        polluted_misses = 0;
+
+        for(int i=0; i<NUM_BLOOM_ENTRIES; i++){
+            bl_filled[i] = 0;
+            bl_request[i] = 0;
+        }
+    };
+};
+
+class IP_TRACKER {
+  public:
+    uint64_t ip_tag;
+    uint16_t ip_valid;
+    uint32_t pref_type;                                     // prefetch class type
+    int stride;
+    uint64_t page_tag;                                     // last page seen by IP
+    uint64_t last_cl_offset;                                // last cl offset in the 4KB page
+    uint16_t signature;                                     // CPLX signature                                             // last stride sent by metadata
+
+    IP_TRACKER () {
+        ip_tag = 0;
+        ip_valid = 0;
+        pref_type = 0;
+        stride = 0;
+        page_tag = 0;
+        last_cl_offset = 0;
+        signature = 0;
+    };
+};
+
+class DELTA_PRED_TABLE {
+public:
+    int delta;
+    int conf;
+
+    DELTA_PRED_TABLE () {
+        delta = 0;
+        conf = 0;
+    };
+};
+
+
+STAT_COLLECT stats_l2[NUM_CPUS][5];     // for GS, CS, CPLX, NL and no class
+uint64_t num_misses_l2[NUM_CPUS] = {0};
+DELTA_PRED_TABLE DPT_l2[NUM_CPUS][4096];
+uint32_t spec_nl_l2[NUM_CPUS] = {0};
+IP_TRACKER trackers[NUM_CPUS][NUM_IP_TABLE_L2_ENTRIES];
+
+
+uint64_t hash_bloom_l2(uint64_t addr){
+    uint64_t first_half, sec_half;
+    first_half = addr & 0xFFF;
+    sec_half = (addr >> 12) & 0xFFF;
+ if((first_half ^ sec_half) >= 4096)
+     assert(0);
+    return ((first_half ^ sec_half) & 0xFFF);
+}
+
+int decode_stride(uint32_t metadata){
+    int stride=0;
+    if(metadata & 0b1000000)
+        stride = -1*(metadata & 0b111111);
+    else
+        stride = metadata & 0b111111;
+
+    return stride;
+}
+
+int update_conf_l1(int stride, int pred_stride, int conf){
+    if(stride == pred_stride){             // use 2-bit saturating counter for confidence
+        conf++;
+        if(conf > 3)
+            conf = 3;
+    } else {
+        conf--;
+        if(conf < 0)
+            conf = 0;
+    }
+
+return conf;
+}
+
+uint16_t update_sig_l2(uint16_t old_sig, int delta){
+    uint16_t new_sig = 0;
+    int sig_delta = 0;
+
+// 7-bit sign magnitude form, since we need to track deltas from +63 to -63
+    sig_delta = (delta < 0) ? (((-1) * delta) + (1 << 6)) : delta;
+    new_sig = ((old_sig << 1) ^ sig_delta) & 0xFFF;                     // 12-bit signature
+
+    return new_sig;
+}
+
+uint32_t encode_metadata_l2(int stride, uint16_t type, int spec_nl_l2){
+
+uint32_t metadata = 0;
+
+// first encode stride in the last 8 bits of the metadata
+if(stride > 0)
+    metadata = stride;
+else
+    metadata = ((-1*stride) | 0b1000000);
+
+// encode the type of IP in the next 4 bits
+metadata = metadata | (type << 8);
+
+// encode the speculative NL bit in the next 1 bit
+metadata = metadata | (spec_nl_l2 << 12);
+
+return metadata;
+
+}
+
+void stat_col_L2(uint64_t addr, uint8_t cache_hit, uint8_t cpu, uint64_t ip){
+    uint64_t index = hash_bloom_l2(addr);
+    int ip_index = ip & ((1 << NUM_IP_INDEX_BITS_L2)-1);
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS_L2) & ((1 << NUM_IP_TAG_BITS_L2)-1);
+
+    for(int i=0; i<5; i++){
+        if(cache_hit){
+            if(stats_l2[cpu][i].bl_filled[index] == 1){
+                stats_l2[cpu][i].useful++;
+                stats_l2[cpu][i].filled++;
+                stats_l2[cpu][i].bl_filled[index] = 0;
+            }
+        } else {
+            if(ip_tag == trackers[cpu][ip_index].ip_tag){
+                if(trackers[cpu][ip_index].pref_type == i)
+                    stats_l2[cpu][i].misses++;
+                if(stats_l2[cpu][i].bl_filled[index] == 1){
+                    stats_l2[cpu][i].polluted_misses++;
+                    stats_l2[cpu][i].filled++;
+                    stats_l2[cpu][i].bl_filled[index] = 0;
+                }
+            }
+        }
+
+        if(num_misses_l2[cpu] % 1024 == 0){
+            for(int j=0; j<NUM_BLOOM_ENTRIES; j++){
+                stats_l2[cpu][i].filled += stats_l2[cpu][i].bl_filled[j];
+                stats_l2[cpu][i].bl_filled[j] = 0;
+                stats_l2[cpu][i].bl_request[j] = 0;
+            }
+        }
+    }
+}
+
+/*void ipcp_prefetch(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+
+uint64_t page = addr >> LOG2_PAGE_SIZE;
+    uint64_t curr_tag = (page ^ (page >> 6) ^ (page >> 12)) & ((1<<NUM_IP_TAG_BITS_L2)-1);
+    uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+    int prefetch_degree = 0;
+    int64_t stride = decode_stride(metadata_in);
+    uint32_t pref_type = (metadata_in & 0xF00) >> 8;
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS_L2) & ((1 << NUM_IP_TAG_BITS_L2)-1);
+    int num_prefs = 0;
+    uint16_t signature = 0;
+    uint64_t bl_index = 0;
+if(NUM_CPUS == 1){
+   if (MSHR.occupancy < (1*MSHR.SIZE)/2)
+    prefetch_degree = 4;
+   else
+    prefetch_degree = 3;
+} else {                                    // tightening the degree for multi-core
+    prefetch_degree = 2;
+}
+
+stat_col_L2(addr, cache_hit, cpu, ip);
+if(cache_hit == 0 && type != PREFETCH)
+    num_misses_l2[cpu]++;
+
+// calculate the index bit
+int index = ip & ((1 << NUM_IP_INDEX_BITS_L2)-1);
+    if(trackers[cpu][index].ip_tag != ip_tag){              // new/conflict IP
+        if(trackers[cpu][index].ip_valid == 0){             // if valid bit is zero, update with latest IP info
+        trackers[cpu][index].ip_tag = ip_tag;
+        trackers[cpu][index].pref_type = pref_type;
+        trackers[cpu][index].stride = stride;
+        trackers[cpu][index].page_tag = curr_tag;
+        trackers[cpu][index].last_cl_offset = cl_offset;
+        trackers[cpu][index].signature = 0;
+    } else {
+        trackers[cpu][index].ip_valid = 0;                  // otherwise, reset valid bit and leave the previous IP as it is
+    }
+
+        // issue a next line prefetch upon encountering new IP
+        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
+        #ifdef DO_PREF
+        prefetch_line(ip, addr, pf_address, FILL_L2, 0);
+        #endif
+        SIG_DP(cout << "1, ");
+        return;	// metadata_in;
+    }
+    else {                                                  // if same IP encountered, set valid bit
+        trackers[cpu][index].ip_valid = 1;
+    }
+
+// update the IP table upon receiving metadata from prefetch
+if(type == PREFETCH){
+    trackers[cpu][index].pref_type = pref_type;
+    trackers[cpu][index].stride = stride;
+    spec_nl_l2[cpu] = metadata_in & 0x1000;
+}
+
+SIG_DP(
+cout << ip << ", " << cache_hit << ", " << cl_addr << ", ";
+cout << ", " << stride << "; ";
+);
+
+// do not train cplx on prefetch requests
+if (type != PREFETCH){
+    int64_t stride_cplx = 0;
+
+
+
+    if (cl_offset > trackers[cpu][index].last_cl_offset)
+        stride_cplx = cl_offset - trackers[cpu][index].last_cl_offset;
+    else {
+        stride_cplx = trackers[cpu][index].last_cl_offset - cl_offset;
+        stride_cplx *= -1;
+    }
+
+    // page boundary learning
+if(curr_tag != trackers[cpu][index].page_tag){
+    if(stride_cplx < 0)
+        stride_cplx += 64;
+    else
+        stride_cplx -= 64;
+}
+uint16_t last_signature = trackers[cpu][index].signature;
+// update complex stride(CPLX) confidence
+DPT_l2[cpu][last_signature].conf = update_conf_l1(stride_cplx, DPT_l2[cpu][last_signature].delta, DPT_l2[cpu][last_signature].conf);
+
+// update CPLX only if confidence is zero
+if(DPT_l2[cpu][last_signature].conf == 0)
+    DPT_l2[cpu][last_signature].delta = stride_cplx;
+
+// calculate and update new signature in IP table
+signature = update_sig_l2(last_signature, stride_cplx);
+trackers[cpu][index].signature = signature;
+
+// be conservative and do not prefetch at L2 if MPKC is too high
+if(stride_cplx == 0)
+    return;	// metadata_in;
+
+// cout << ip << ", " << cache_hit << ", " << cl_addr << ", " << addr << ", " << stride_cplx << "; ";
+// cout << last_signature<< ", "  << DPT_l2[cpu][last_signature].delta<< ", "  << DPT_l2[cpu][last_signature].conf << "; ";
+// cout << endl;
+}
+
+
+        if(DPT_l2[cpu][signature].conf >= 0 && DPT_l2[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        for (i=0; i<prefetch_degree; i++) {
+            pref_offset += DPT_l2[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+// Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) ||
+                    (DPT_l2[cpu][signature].conf == -1) ||
+                    (DPT_l2[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+
+            if(DPT_l2[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
+            // if(spec_nl_l2[cpu] == 1)
+                bl_index = hash_bloom_l2(pf_address);
+                stats_l2[cpu][CPLX_TYPE].bl_request[bl_index] = 1;
+                uint32_t metadata = encode_metadata_l2(0, CPLX_TYPE, spec_nl_l2[cpu]);
+                trackers[cpu][index].pref_type = 3;
+                #ifdef DO_PREF
+                prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+                #endif
+                num_prefs++;
+                // cout << "here";
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l2(signature, DPT_l2[cpu][signature].delta);
+            trackers[cpu][index].pref_type = 3;
+        }
+    } else if((trackers[cpu][index].pref_type == 1 || trackers[cpu][index].pref_type == 2) && trackers[cpu][index].stride != 0){      // S or CS class
+            uint32_t metadata = 0;
+
+if(trackers[cpu][index].pref_type == 1){
+                prefetch_degree = prefetch_degree*2;
+                metadata = encode_metadata_l2(1, S_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            } else{
+                metadata = encode_metadata_l2(1, CS_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            }
+
+            for (int i=0; i<prefetch_degree; i++) {
+                uint64_t pf_address = (cl_addr + (trackers[cpu][index].stride*(i+1))) << LOG2_BLOCK_SIZE;
+
+                // Check if prefetch address is in same 4 KB page
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                    break;
+                num_prefs++;
+                #ifdef DO_PREF
+                prefetch_line(ip, addr, pf_address, FILL_L2,metadata);
+                #endif
+                SIG_DP(cout << trackers[cpu][index].stride << ", ");
+            }
+        }
+
+// if no prefetches are issued till now, speculatively issue a next_line prefetch
+if(num_prefs == 0 && spec_nl_l2[cpu] == 1){                                        // NL IP
+    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
+    bl_index = hash_bloom_l2(pf_address);
+    stats_l2[cpu][NL_TYPE].bl_request[bl_index] = 1;
+    uint32_t metadata = encode_metadata_l2(1, NL_TYPE, spec_nl_l2[cpu]);
+    trackers[cpu][index].pref_type = 3;
+    #ifdef DO_PREF
+    prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+    #endif
+    SIG_DP(cout << "1, ");
+}
+
+// update the IP table entries
+trackers[cpu][index].last_cl_offset = cl_offset;
+trackers[cpu][index].page_tag = curr_tag;
+
+SIG_DP(cout << endl);
+return;	// metadata_in;
+
+
+}*/
+
+
+/*void ipcp_stats_print()
+{
+cout << endl;
+
+uint64_t total_request=0, total_polluted=0, total_useful=0, total_late=0;
+
+for(int i=0; i<5; i++){
+    total_request += stats_l2[cpu][i].filled;
+    total_polluted += stats_l2[cpu][i].polluted_misses;
+    total_useful += stats_l2[cpu][i].useful;
+    total_late += pref_late[i];
+}
+
+cout << "CPLX: " << endl;
+cout << "pref_filled: " << pref_filled[3] << endl;
+cout << "pref_useful: " << pref_useful[3] << endl;
+cout << "pref_late: " << pref_late[3] << endl;
+cout << "misses: " << stats_l2[cpu][3].misses << endl;
+cout << "misses_by_poll: " << stats_l2[cpu][3].polluted_misses << endl;
+cout << endl;
+
+cout << "NL_L2: " << endl;
+cout << "pref_filled: " << pref_filled[4] << endl;
+cout << "pref_useful: " << pref_useful[4] << endl;
+cout << "pref_late: " << pref_late[4] << endl;
+cout << "misses: " << stats_l2[cpu][4].misses << endl;
+cout << "misses_by_poll: " << stats_l2[cpu][4].polluted_misses << endl;
+cout << endl;
+
+
+cout << "total_filled: " << pf_fill << endl;
+cout << "total_useful: " << pf_useful << endl;
+cout << "total_late: " << total_late << endl;
+cout << "total_polluted: " << total_polluted << endl;
+cout << "total_misses: " << num_misses_l2[cpu] << endl;
+cout << endl;
+}*/
+
+/*void spp_prefetch(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+	uint64_t page = addr >> LOG2_PAGE_SIZE;
+    uint32_t page_offset = (addr >> LOG2_BLOCK_SIZE) & (PAGE_SIZE / BLOCK_SIZE - 1),
+             last_sig = 0,
+             curr_sig = 0,
+
+             confidence_q[L2C_MSHR_SIZE],
+             depth = 0;
+
+    int32_t  delta = 0,
+             delta_q[L2C_MSHR_SIZE];
+
+    for (uint32_t i = 0; i < L2C_MSHR_SIZE; i++){
+        confidence_q[i] = 0;
+        delta_q[i] = 0;
+    }
+    confidence_q[0] = 100;
+    GHR.global_accuracy = GHR.pf_issued ? ((100 * GHR.pf_useful) / GHR.pf_issued)  : 0;
+
+    SPP_DP (
+        cout << endl << "[ChampSim] " << __func__ << " addr: " << hex << addr << " cache_line: " << (addr >> LOG2_BLOCK_SIZE);
+        cout << " page: " << page << " page_offset: " << dec << page_offset << endl;
+    );
+
+    // Stage 1: Read and update a sig stored in ST
+    // last_sig and delta are used to update (sig, delta) correlation in PT
+    // curr_sig is used to read prefetch candidates in PT
+
+	ST.read_and_update_sig(page, page_offset, last_sig, curr_sig, delta);
+
+    // Also check the prefetch filter in parallel to update global accuracy counters
+    FILTER.check(addr, L2C_DEMAND);
+
+    // Stage 2: Update delta patterns stored in PT
+    if (last_sig) PT.update_pattern(last_sig, delta);
+
+    // Stage 3: Start prefetching
+    uint64_t base_addr = addr;
+    uint32_t lookahead_conf = 100,
+             pf_q_head = 0,
+             pf_q_tail = 0;
+    uint8_t  do_lookahead = 0;
+
+#ifdef LOOKAHEAD_ON
+    do {
+#endif
+        uint32_t lookahead_way = PT_WAY;
+        PT.read_pattern(curr_sig, delta_q, confidence_q, lookahead_way, lookahead_conf, pf_q_tail, depth);
+
+        do_lookahead = 0;
+        for (uint32_t i = pf_q_head; i < pf_q_tail; i++) {
+            if (confidence_q[i] >= PF_THRESHOLD) {
+                uint64_t pf_addr = (base_addr & ~(BLOCK_SIZE - 1)) + (delta_q[i] << LOG2_BLOCK_SIZE);
+
+if ((addr & ~(PAGE_SIZE - 1)) == (pf_addr & ~(PAGE_SIZE - 1))) { // Prefetch request is in the same physical page
+                    if (FILTER.check(pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? SPP_L2C_PREFETCH : SPP_LLC_PREFETCH))) {
+
+                                                if(prefetch_line(ip, addr, pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? FILL_L2 : FILL_LLC), 0)){ // Use addr (not base_addr) to obey the same physical page boundary
+                                                        depth_track[depth]++;
+                                                        FILTER.add_to_filter(pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? SPP_L2C_PREFETCH : SPP_LLC_PREFETCH));
+                                                }else{
+                                                        prefetch_q_full++;
+                                                }
+
+                        if (confidence_q[i] >= FILL_THRESHOLD) {
+                            GHR.pf_issued++;    //global issued incremented if filled in L2.
+                            if (GHR.pf_issued > GLOBAL_COUNTER_MAX) {
+                                GHR.pf_issued >>= 1;
+                                GHR.pf_useful >>= 1;
+                            }
+                            SPP_DP (cout << "[ChampSim] SPP L2 prefetch issued GHR.pf_issued: " << GHR.pf_issued << " GHR.pf_useful: " << GHR.pf_useful << endl;);
+                        }
+
+SPP_DP (
+                            cout << "[ChampSim] " << __func__ << " base_addr: " << hex << base_addr << " pf_addr: " << pf_addr;
+                            cout << " pf_cache_line: " << (pf_addr >> LOG2_BLOCK_SIZE);
+                            cout << " prefetch_delta: " << dec << delta_q[i] << " confidence: " << confidence_q[i];
+                            cout << " depth: " << i << " fill_level: " << ((confidence_q[i] >= FILL_THRESHOLD) ? FILL_L2 : FILL_LLC) << endl;
+                        );
+                    }else{      //So here, the depth frequency is tracked.
+                                                depth_lost_at_filter[depth]++;
+                                        }
+                } else { // Prefetch request is crossing the physical page boundary
+#ifdef GHR_ON
+                    // Store this prefetch request in GHR to bootstrap SPP learning when we see a ST miss (i.e., accessing a new page)
+                    GHR.update_entry(curr_sig, confidence_q[i], (pf_addr >> LOG2_BLOCK_SIZE) & 0x3F, delta_q[i]);
+#endif
+                                        depth_lost_at_page[depth]++;
+                }
+
+                do_lookahead = 1;
+                pf_q_head++;
+            }
+        }
+
+// Update base_addr and curr_sig
+        if (lookahead_way < PT_WAY) {
+            uint32_t set = get_hash(curr_sig) % PT_SET;
+            base_addr += (PT.delta[set][lookahead_way] << LOG2_BLOCK_SIZE);
+
+            // PT.delta uses a 7-bit sign magnitude representation to generate sig_delta
+            //int sig_delta = (PT.delta[set][lookahead_way] < 0) ? ((((-1) * PT.delta[set][lookahead_way]) & 0x3F) + 0x40) : PT.delta[set][lookahead_way];
+            int sig_delta = (PT.delta[set][lookahead_way] < 0) ? (((-1) * PT.delta[set][lookahead_way]) + (1 << (SIG_DELTA_BIT - 1))) : PT.delta[set][lookahead_way];
+            curr_sig = ((curr_sig << SIG_SHIFT) ^ sig_delta) & SIG_MASK;
+        }
+
+        SPP_DP (
+            cout << "Looping curr_sig: " << hex << curr_sig << " base_addr: " << base_addr << dec;
+            cout << " pf_q_head: " << pf_q_head << " pf_q_tail: " << pf_q_tail << " depth: " << depth << endl;
+        );
+#ifdef LOOKAHEAD_ON
+    } while (do_lookahead);
+#endif
+
+    return;	// metadata_in;
+
+}*/
+
+void spp_stats_print()
+{
+	int tot = 0;
+        printf("------------------\n");
+        printf("Depth Distribution\n");
+        printf("------------------\n");
+        for(int a = 0; a < 30; a++){
+                printf("depth %d: %d\n", a, depth_track[a]);
+                tot += depth_track[a];
+        }
+        printf("Total: %d\n", tot);
+        printf("-----------------------------\n");
+        printf("-----------------------------\n");
+        printf("        Captured at Filter\n");
+        printf("-----------------------------\n");
+        for(int a = 0; a < 30; a++){
+                printf("depth %d: %d\n", a, depth_lost_at_filter[a]);
+        }
+        printf("-----------------------------\n");
+        printf("-----------------------------\n");
+        printf("                Lost at Page\n");
+        printf("-----------------------------\n");
+        for(int a = 0; a < 30; a++){
+                printf("depth %d: %d\n", a, depth_lost_at_page[a]);
+        }
+        printf("-----------------------------\n");
+        printf("-----------------------------\n");
+        printf("        Lost due to PQ Size\n");
+        printf("-----------------------------\n");
+        printf("%d\n", prefetch_q_full);
+        printf("-----------------------------\n");
+
+}
+
+// TODO: Find a good 64-bit hash function
+uint64_t get_hash(uint64_t key)
+{
+    // Robert Jenkins' 32 bit mix function
+    key += (key << 12);
+    key ^= (key >> 22);
+    key += (key << 4);
+    key ^= (key >> 9);
+    key += (key << 10);
+    key ^= (key >> 2);
+    key += (key << 7);
+    key ^= (key >> 12);
+
+    // Knuth's multiplicative method
+    key = (key >> 3) * 2654435761;
+
+    return key;
+}
+
+void SIGNATURE_TABLE::read_and_update_sig(uint64_t page, uint32_t page_offset, uint32_t &last_sig, uint32_t &curr_sig, int32_t &delta)
+{
+    uint32_t set = get_hash(page) % ST_SET,     //To index into the ST.
+             match = ST_WAY,
+             partial_page = page & ST_TAG_MASK; //Using partial tag in the ST.
+    uint8_t  ST_hit = 0;
+    int      sig_delta = 0;
+
+    SPP_DP (cout << "[ST] " << __func__ << " page: " << hex << page << " partial_page: " << partial_page << dec << endl;);
+
+    // Case 1: Hit
+    for (match = 0; match < ST_WAY; match++) {
+        if (valid[set][match] && (tag[set][match] == partial_page)) {
+            last_sig = sig[set][match];
+            delta = page_offset - last_offset[set][match];
+
+            if (delta) {        //N As in if it's not called for the same line, right?  Yes.
+                // Build a new sig based on 7-bit sign magnitude representation of delta
+                //sig_delta = (delta < 0) ? ((((-1) * delta) & 0x3F) + 0x40) : delta;
+                sig_delta = (delta < 0) ? (((-1) * delta) + (1 << (SIG_DELTA_BIT - 1))) : delta;
+                sig[set][match] = ((last_sig << SIG_SHIFT) ^ sig_delta) & SIG_MASK;
+                curr_sig = sig[set][match];
+                last_offset[set][match] = page_offset;
+
+	SPP_DP (
+                    cout << "[ST] " << __func__ << " hit set: " << set << " way: " << match;
+                    cout << " valid: " << valid[set][match] << " tag: " << hex << tag[set][match];
+                    cout << " last_sig: " << last_sig << " curr_sig: " << curr_sig;
+                    cout << " delta: " << dec << delta << " last_offset: " << page_offset << endl;
+                );
+            } else last_sig = 0; // Hitting the same cache line, delta is zero
+
+            ST_hit = 1;
+            break;
+        }
+    }
+
+    // Case 2: Invalid //N MISS and looking for invalid.
+    if (match == ST_WAY) {
+        for (match = 0; match < ST_WAY; match++) {
+            if (valid[set][match] == 0) {
+                valid[set][match] = 1;
+                tag[set][match] = partial_page;
+                sig[set][match] = 0;    //N Why zero? Why not XOR current delta in this?
+                curr_sig = sig[set][match];
+                last_offset[set][match] = page_offset;
+
+                SPP_DP (
+                    cout << "[ST] " << __func__ << " invalid set: " << set << " way: " << match;
+                    cout << " valid: " << valid[set][match] << " tag: " << hex << partial_page;
+                    cout << " sig: " << sig[set][match] << " last_offset: " << dec << page_offset << endl;
+		);
+
+                break;
+            }
+        }
+    }
+
+    // Case 3: Miss     //N Miss and no invalid
+    if (match == ST_WAY) {
+        for (match = 0; match < ST_WAY; match++) {
+            if (lru[set][match] == ST_WAY - 1) { // Find replacement victim
+                tag[set][match] = partial_page;
+                sig[set][match] = 0;
+                curr_sig = sig[set][match];
+                last_offset[set][match] = page_offset;
+
+                SPP_DP (
+                    cout << "[ST] " << __func__ << " miss set: " << set << " way: " << match;
+                    cout << " valid: " << valid[set][match] << " victim tag: " << hex << tag[set][match] << " new tag: " << partial_page;
+                    cout << " sig: " << sig[set][match] << " last_offset: " << dec << page_offset << endl;
+                );
+
+                break;
+            }
+        }
+
+	#ifdef SPP_SANITY_CHECK
+        // Assertion
+        if (match == ST_WAY) {
+            cout << "[ST] Cannot find a replacement victim!" << endl;
+            assert(0);
+        }
+        #endif
+    }
+//N So basically this function, when a page misses in the ST, creates a new entry, no learning in this iteration except if a corresponding entry is present in the GHR.
+#ifdef GHR_ON
+    if (ST_hit == 0) {
+        uint32_t GHR_found = GHR.check_entry(page_offset);
+        if (GHR_found < MAX_GHR_ENTRY) {
+            sig_delta = (GHR.delta[GHR_found] < 0) ? (((-1) * GHR.delta[GHR_found]) + (1 << (SIG_DELTA_BIT - 1))) : GHR.delta[GHR_found];
+            sig[set][match] = ((GHR.sig[GHR_found] << SIG_SHIFT) ^ sig_delta) & SIG_MASK;
+            curr_sig = sig[set][match];
+        }
+    }
+#endif
+
+    // Update LRU
+    for (uint32_t way = 0; way < ST_WAY; way++) {
+        if (lru[set][way] < lru[set][match]) {
+            lru[set][way]++;
+#ifdef SPP_SANITY_CHECK
+            // Assertion
+            if (lru[set][way] >= ST_WAY) {
+                cout << "[ST] LRU value is wrong! set: " << set << " way: " << way << " lru: " << lru[set][way] << endl;
+                assert(0);
+            }
+            #endif
+        }
+    }
+    lru[set][match] = 0; // Promote to the MRU position
+}
+
+void PATTERN_TABLE::update_pattern(uint32_t last_sig, int curr_delta)
+{
+    // Update (sig, delta) correlation
+    uint32_t set = get_hash(last_sig) % PT_SET,
+             match = 0;
+
+    // Case 1: Hit
+    for (match = 0; match < PT_WAY; match++) {
+        if (delta[set][match] == curr_delta) {
+            c_delta[set][match]++;
+            c_sig[set]++;
+            if (c_sig[set] > C_SIG_MAX) {
+                for (uint32_t way = 0; way < PT_WAY; way++)
+                    c_delta[set][way] >>= 1;
+                c_sig[set] >>= 1;
+            }
+SPP_DP (
+                cout << "[PT] " << __func__ << " hit sig: " << hex << last_sig << dec << " set: " << set << " way: " << match;
+                cout << " delta: " << delta[set][match] << " c_delta: " << c_delta[set][match] << " c_sig: " << c_sig[set] << endl;
+            );
+
+            break;
+        }
+    }
+
+    // Case 2: Miss
+    if (match == PT_WAY) {
+        uint32_t victim_way = PT_WAY,
+                 min_counter = C_SIG_MAX;
+
+        for (match = 0; match < PT_WAY; match++) {
+            if (c_delta[set][match] < min_counter) { // Select an entry with the minimum c_delta
+                victim_way = match;
+                min_counter = c_delta[set][match];
+            }
+        }
+
+        delta[set][victim_way] = curr_delta;
+        c_delta[set][victim_way] = 0;   //N DOUBT c_delta = 0, but c_sig++, how does that even make sense?
+        c_sig[set]++;
+        if (c_sig[set] > C_SIG_MAX) {
+            for (uint32_t way = 0; way < PT_WAY; way++)
+                c_delta[set][way] >>= 1;
+            c_sig[set] >>= 1;
+        }
+SPP_DP (
+            cout << "[PT] " << __func__ << " miss sig: " << hex << last_sig << dec << " set: " << set << " way: " << victim_way;
+            cout << " delta: " << delta[set][victim_way] << " c_delta: " << c_delta[set][victim_way] << " c_sig: " << c_sig[set] << endl;
+        );
+
+        #ifdef SPP_SANITY_CHECK
+        // Assertion
+        if (victim_way == PT_WAY) {
+            cout << "[PT] Cannot find a replacement victim!" << endl;
+            assert(0);
+        }
+        #endif
+    }
+}
+
+void PATTERN_TABLE::read_pattern(uint32_t curr_sig, int *delta_q, uint32_t *confidence_q, uint32_t &lookahead_way, uint32_t &lookahead_conf, uint32_t &pf_q_tail, uint32_t &depth)
+{
+    // Update (sig, delta) correlation
+    uint32_t set = get_hash(curr_sig) % PT_SET,
+             local_conf = 0,
+             pf_conf = 0,
+max_conf = 0;
+
+    if (c_sig[set]) {
+        for (uint32_t way = 0; way < PT_WAY; way++) {
+            local_conf = (100 * c_delta[set][way]) / c_sig[set];
+
+            //EDIT MADE BY Neelu BEGIN, to consider global_accuracy*1.5 in the confidence if it falls below 100, 100 otherwise.
+            if(GHR.global_accuracy*1.5 > 100)
+		pf_conf = depth ? (100 * c_delta[set][way] / c_sig[set] * lookahead_conf / 100) : local_conf;
+            else
+                pf_conf = depth ? (GHR.global_accuracy*1.5 * c_delta[set][way] / c_sig[set] * lookahead_conf / 100) : local_conf;
+           // pf_conf = depth ? (GHR.global_accuracy * c_delta[set][way] / c_sig[set] * lookahead_conf / 100) : local_conf;
+            //EDIT MADE BY Neelu END
+
+            if (pf_conf >= PF_THRESHOLD) {
+                confidence_q[pf_q_tail] = pf_conf;
+                delta_q[pf_q_tail] = delta[set][way];
+
+                // Lookahead path follows the most confident entry
+                if (pf_conf > max_conf) {
+                    lookahead_way = way;
+                    max_conf = pf_conf;
+                }
+                pf_q_tail++;
+
+SPP_DP (
+                    cout << "[PT] " << __func__ << " HIGH CONF: " << pf_conf << " sig: " << hex << curr_sig << dec << " set: " << set << " way: " << way;
+                    cout << " delta: " << delta[set][way] << " c_delta: " << c_delta[set][way] << " c_sig: " << c_sig[set];
+                    cout << " conf: " << local_conf << " depth: " << depth << endl;
+                );
+            } else {
+                SPP_DP (
+                    cout << "[PT] " << __func__ << "  LOW CONF: " << pf_conf << " sig: " << hex << curr_sig << dec << " set: " << set << " way: " << way;
+                    cout << " delta: " << delta[set][way] << " c_delta: " << c_delta[set][way] << " c_sig: " << c_sig[set];
+                    cout << " conf: " << local_conf << " depth: " << depth << endl;
+                );
+            }
+        }
+        lookahead_conf = max_conf;
+        if (lookahead_conf >= PF_THRESHOLD) depth++;
+
+        SPP_DP (cout << "global_accuracy: " << GHR.global_accuracy << " lookahead_conf: " << lookahead_conf << endl;);
+    } else confidence_q[pf_q_tail] = 0;
+}
+
+bool PREFETCH_FILTER::add_to_filter(uint64_t check_addr, FILTER_REQUEST filter_request){
+        uint64_t cache_line = check_addr >> LOG2_BLOCK_SIZE,
+             hash = get_hash(cache_line),
+             quotient = (hash >> REMAINDER_BIT) & ((1 << QUOTIENT_BIT) - 1),
+             remainder = hash % (1 << REMAINDER_BIT);
+
+        switch (filter_request) {
+                case SPP_L2C_PREFETCH:
+
+                        valid[quotient] = 1;  // Mark as prefetched
+                        useful[quotient] = 0; // Reset useful bit
+                        remainder_tag[quotient] = remainder;
+
+                        SPP_DP (
+                                cout << "[FILTER] " << __func__ << " set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                                cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag[quotient] << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+                        );
+            break;
+
+        case SPP_LLC_PREFETCH:
+                        // NOTE: SPP_LLC_PREFETCH has relatively low confidence (FILL_THRESHOLD <= SPP_LLC_PREFETCH < PF_THRESHOLD)
+                        // Therefore, it is safe to prefetch this cache line in the large LLC and save precious L2C capacity
+                        // If this prefetch request becomes more confident and SPP eventually issues SPP_L2C_PREFETCH,
+                        // we can get this cache line immediately from the LLC (not from DRAM)
+			// To allow this fast prefetch from LLC, SPP does not set the valid bit for SPP_LLC_PREFETCH
+
+                        //valid[quotient] = 1;
+                        //useful[quotient] = 0;
+
+                        SPP_DP (
+                                cout << "[FILTER] " << __func__ << " don't set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                                cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+                        );
+            break;
+                default:
+            cout << "[FILTER] Invalid filter request type: " << filter_request << endl;
+            assert(0);
+        }
+        return true;
+}
+
+bool PREFETCH_FILTER::check(uint64_t check_addr, FILTER_REQUEST filter_request)
+{
+    uint64_t cache_line = check_addr >> LOG2_BLOCK_SIZE,
+             hash = get_hash(cache_line),
+             quotient = (hash >> REMAINDER_BIT) & ((1 << QUOTIENT_BIT) - 1),
+             remainder = hash % (1 << REMAINDER_BIT);
+
+    SPP_DP (
+        cout << "[FILTER] check_addr: " << hex << check_addr << " check_cache_line: " << (check_addr >> LOG2_BLOCK_SIZE);
+        cout << " hash: " << hash << dec << " quotient: " << quotient << " remainder: " << remainder << endl;
+    );
+
+    switch (filter_request) {
+        case SPP_L2C_PREFETCH:
+            if ((valid[quotient] || useful[quotient]) && remainder_tag[quotient] == remainder) {
+                SPP_DP (
+                    cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+                );
+
+                return false; // False return indicates "Do not prefetch"
+            }
+                        //else {
+            //    valid[quotient] = 1;  // Mark as prefetched
+            //    useful[quotient] = 0; // Reset useful bit
+            //    remainder_tag[quotient] = remainder;
+	    //    SPP_DP (
+            //        cout << "[FILTER] " << __func__ << " set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+            //        cout << " quotient: " << quotient << " remainder_tag: " << remainder_tag[quotient] << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+            //    );
+            //}
+            break;
+
+        case SPP_LLC_PREFETCH:
+            if ((valid[quotient] || useful[quotient]) && remainder_tag[quotient] == remainder) {
+                SPP_DP (
+                    cout << "[FILTER] " << __func__ << " line is already in the filter check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+                );
+
+                return false; // False return indicates "Do not prefetch"
+            } else {
+                // NOTE: SPP_LLC_PREFETCH has relatively low confidence (FILL_THRESHOLD <= SPP_LLC_PREFETCH < PF_THRESHOLD)
+                // Therefore, it is safe to prefetch this cache line in the large LLC and save precious L2C capacity
+                // If this prefetch request becomes more confident and SPP eventually issues SPP_L2C_PREFETCH,
+                // we can get this cache line immediately from the LLC (not from DRAM)
+                // To allow this fast prefetch from LLC, SPP does not set the valid bit for SPP_LLC_PREFETCH
+
+	//valid[quotient] = 1;
+                //useful[quotient] = 0;
+
+                SPP_DP (
+                    cout << "[FILTER] " << __func__ << " don't set valid for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient] << endl;
+                );
+            }
+            break;
+
+        case L2C_DEMAND:
+            if ((remainder_tag[quotient] == remainder) && (useful[quotient] == 0)) {
+                useful[quotient] = 1;
+                if (valid[quotient]) GHR.pf_useful++; // This cache line was prefetched by SPP and actually used in the program
+
+                SPP_DP (
+                    cout << "[FILTER] " << __func__ << " set useful for check_addr: " << hex << check_addr << " cache_line: " << cache_line << dec;
+                    cout << " quotient: " << quotient << " valid: " << valid[quotient] << " useful: " << useful[quotient];
+                    cout << " GHR.pf_issued: " << GHR.pf_issued << " GHR.pf_useful: " << GHR.pf_useful << endl;
+                );
+            }
+            break;
+
+        case L2C_EVICT:
+		// Decrease global pf_useful counter when there is a useless prefetch (prefetched but not used)
+            if (valid[quotient] && !useful[quotient] && GHR.pf_useful) GHR.pf_useful--;
+
+            // Reset filter entry
+            valid[quotient] = 0;
+            useful[quotient] = 0;
+            remainder_tag[quotient] = 0;
+            break;
+
+        default:
+            // Assertion
+            cout << "[FILTER] Invalid filter request type: " << filter_request << endl;
+            assert(0);
+    }
+
+    return true;
+}
+
+void GLOBAL_REGISTER::update_entry(uint32_t pf_sig, uint32_t pf_confidence, uint32_t pf_offset, int pf_delta)
+{
+    // NOTE: GHR implementation is slightly different from the original paper
+    // Instead of matching (last_offset + delta), GHR simply stores and matches the pf_offset
+    uint32_t min_conf = 100,
+             victim_way = MAX_GHR_ENTRY;
+
+    SPP_DP (
+        cout << "[GHR] Crossing the page boundary pf_sig: " << hex << pf_sig << dec;
+        cout << " confidence: " << pf_confidence << " pf_offset: " << pf_offset << " pf_delta: " << pf_delta << endl;
+    );
+
+    for (uint32_t i = 0; i < MAX_GHR_ENTRY; i++) {
+        //if (sig[i] == pf_sig) { // TODO: Which one is better and consistent?
+            // If GHR already holds the same pf_sig, update the GHR entry with the latest info
+        if (valid[i] && (offset[i] == pf_offset)) {
+            // If GHR already holds the same pf_offset, update the GHR entry with the latest info
+            sig[i] = pf_sig;
+            confidence[i] = pf_confidence;
+            //offset[i] = pf_offset;
+            delta[i] = pf_delta;
+
+            SPP_DP (cout << "[GHR] Found a matching index: " << i << endl;);
+		return;
+        }
+
+        // GHR replacement policy is based on the stored confidence value
+        // An entry with the lowest confidence is selected as a victim
+        if (confidence[i] < min_conf) {
+            min_conf = confidence[i];
+            victim_way = i;
+        }
+    }
+
+    // Assertion
+    if (victim_way >= MAX_GHR_ENTRY) {
+        cout << "[GHR] Cannot find a replacement victim!" << endl;
+        assert(0);
+    }
+
+    SPP_DP (
+        cout << "[GHR] Replace index: " << victim_way << " pf_sig: " << hex << sig[victim_way] << dec;
+        cout << " confidence: " << confidence[victim_way] << " pf_offset: " << offset[victim_way] << " pf_delta: " << delta[victim_way] << endl;
+    );
+
+    valid[victim_way] = 1;
+    sig[victim_way] = pf_sig;
+    confidence[victim_way] = pf_confidence;
+    offset[victim_way] = pf_offset;
+    delta[victim_way] = pf_delta;
+}
+
+uint32_t GLOBAL_REGISTER::check_entry(uint32_t page_offset)
+{
+        //N Looking for the entry with same offset and max confidence. 
+    uint32_t max_conf = 0,
+             max_conf_way = MAX_GHR_ENTRY;
+
+    for (uint32_t i = 0; i < MAX_GHR_ENTRY; i++) {
+        if ((offset[i] == page_offset) && (max_conf < confidence[i])) {
+            max_conf = confidence[i];
+            max_conf_way = i;
+        }
+    }
+
+    return max_conf_way;
+}                       
+
+
+void CACHE::l2c_prefetcher_initialize() 
+{
+	for(int a = 0; a < 30; a++)
+                depth_track[a] = 0;
+
+        prefetch_q_full = 0;
+        //overlapping_pref_req_L1[cpu] = 0;
+        //overlapping_pref_req_L2[cpu] = 0;
+        //overlapping_pref_req_mshr[cpu] = 0;
+}
+
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+	//IPCP PREFETCH START	
+	uint64_t page = addr >> LOG2_PAGE_SIZE;
+    uint64_t curr_tag = (page ^ (page >> 6) ^ (page >> 12)) & ((1<<NUM_IP_TAG_BITS_L2)-1);
+    uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+    int prefetch_degree = 0;
+    int64_t stride = decode_stride(metadata_in);
+    uint32_t pref_type = (metadata_in & 0xF00) >> 8;
+    uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS_L2) & ((1 << NUM_IP_TAG_BITS_L2)-1);
+    int num_prefs = 0;
+    uint16_t signature = 0;
+    uint64_t bl_index = 0;
+if(NUM_CPUS == 1){
+   if (MSHR.occupancy < (1*MSHR.SIZE)/2)
+    prefetch_degree = 4;
+   else
+    prefetch_degree = 3;
+} else {                                    // tightening the degree for multi-core
+    prefetch_degree = 2;
+}
+
+stat_col_L2(addr, cache_hit, cpu, ip);
+if(cache_hit == 0 && type != PREFETCH)
+    num_misses_l2[cpu]++;
+
+// calculate the index bit
+int index = ip & ((1 << NUM_IP_INDEX_BITS_L2)-1);
+    if(trackers[cpu][index].ip_tag != ip_tag){              // new/conflict IP
+        if(trackers[cpu][index].ip_valid == 0){             // if valid bit is zero, update with latest IP info
+        trackers[cpu][index].ip_tag = ip_tag;
+        trackers[cpu][index].pref_type = pref_type;
+        trackers[cpu][index].stride = stride;
+        trackers[cpu][index].page_tag = curr_tag;
+        trackers[cpu][index].last_cl_offset = cl_offset;
+        trackers[cpu][index].signature = 0;
+    } else {
+        trackers[cpu][index].ip_valid = 0;                  // otherwise, reset valid bit and leave the previous IP as it is
+    }
+
+        // issue a next line prefetch upon encountering new IP
+        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
+        #ifdef DO_PREF
+        prefetch_line(ip, addr, pf_address, FILL_L2, 0);
+        #endif
+        SIG_DP(cout << "1, ");
+        return metadata_in;
+    }
+    else {                                                  // if same IP encountered, set valid bit
+        trackers[cpu][index].ip_valid = 1;
+    }
+
+// update the IP table upon receiving metadata from prefetch
+if(type == PREFETCH){
+    trackers[cpu][index].pref_type = pref_type;
+    trackers[cpu][index].stride = stride;
+    spec_nl_l2[cpu] = metadata_in & 0x1000;
+}
+SIG_DP(
+cout << ip << ", " << cache_hit << ", " << cl_addr << ", ";
+cout << ", " << stride << "; ";
+);
+
+// do not train cplx on prefetch requests
+if (type != PREFETCH){
+    int64_t stride_cplx = 0;
+
+
+
+    if (cl_offset > trackers[cpu][index].last_cl_offset)
+        stride_cplx = cl_offset - trackers[cpu][index].last_cl_offset;
+    else {
+        stride_cplx = trackers[cpu][index].last_cl_offset - cl_offset;
+        stride_cplx *= -1;
+    }
+
+    // page boundary learning
+if(curr_tag != trackers[cpu][index].page_tag){
+    if(stride_cplx < 0)
+        stride_cplx += 64;
+    else
+        stride_cplx -= 64;
+}
+uint16_t last_signature = trackers[cpu][index].signature;
+// update complex stride(CPLX) confidence
+DPT_l2[cpu][last_signature].conf = update_conf_l1(stride_cplx, DPT_l2[cpu][last_signature].delta, DPT_l2[cpu][last_signature].conf);
+
+// update CPLX only if confidence is zero
+if(DPT_l2[cpu][last_signature].conf == 0)
+    DPT_l2[cpu][last_signature].delta = stride_cplx;
+
+// calculate and update new signature in IP table
+signature = update_sig_l2(last_signature, stride_cplx);
+trackers[cpu][index].signature = signature;
+
+// be conservative and do not prefetch at L2 if MPKC is too high
+if(stride_cplx == 0)
+    return metadata_in;
+
+// cout << ip << ", " << cache_hit << ", " << cl_addr << ", " << addr << ", " << stride_cplx << "; ";
+// cout << last_signature<< ", "  << DPT_l2[cpu][last_signature].delta<< ", "  << DPT_l2[cpu][last_signature].conf << "; ";
+// cout << endl;
+}
+
+
+        if(DPT_l2[cpu][signature].conf >= 0 && DPT_l2[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        for (i=0; i<prefetch_degree; i++) {
+            pref_offset += DPT_l2[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+// Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) ||
+                    (DPT_l2[cpu][signature].conf == -1) ||
+                    (DPT_l2[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+	
+	if(DPT_l2[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
+            // if(spec_nl_l2[cpu] == 1)
+                bl_index = hash_bloom_l2(pf_address);
+                stats_l2[cpu][CPLX_TYPE].bl_request[bl_index] = 1;
+                uint32_t metadata = encode_metadata_l2(0, CPLX_TYPE, spec_nl_l2[cpu]);
+                trackers[cpu][index].pref_type = 3;
+                #ifdef DO_CPLX_PREF
+                prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+                #endif
+                num_prefs++;
+                // cout << "here";
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l2(signature, DPT_l2[cpu][signature].delta);
+            trackers[cpu][index].pref_type = 3;
+        }
+    } 
+
+	//Neelu: Removed else if ladder and converted to two ifs.
+	 if((trackers[cpu][index].pref_type == 1 || trackers[cpu][index].pref_type == 2) && trackers[cpu][index].stride != 0){      // S or CS class
+            uint32_t metadata = 0;
+
+if(trackers[cpu][index].pref_type == 1){
+                prefetch_degree = prefetch_degree*2;
+                metadata = encode_metadata_l2(1, S_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            } else{
+                metadata = encode_metadata_l2(1, CS_TYPE, spec_nl_l2[cpu]);                                // for stream, prefetch with twice the usual degree
+            }
+
+for (int i=0; i<prefetch_degree; i++) {
+                uint64_t pf_address = (cl_addr + (trackers[cpu][index].stride*(i+1))) << LOG2_BLOCK_SIZE;
+
+                // Check if prefetch address is in same 4 KB page
+                if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                    break;
+                num_prefs++;
+                #ifdef DO_PREF
+                prefetch_line(ip, addr, pf_address, FILL_L2,metadata);
+                #endif
+                SIG_DP(cout << trackers[cpu][index].stride << ", ");
+            }
+        }
+
+// if no prefetches are issued till now, speculatively issue a next_line prefetch
+if(num_prefs == 0 && spec_nl_l2[cpu] == 1){                                        // NL IP
+    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
+    bl_index = hash_bloom_l2(pf_address);
+    stats_l2[cpu][NL_TYPE].bl_request[bl_index] = 1;
+    uint32_t metadata = encode_metadata_l2(1, NL_TYPE, spec_nl_l2[cpu]);
+    trackers[cpu][index].pref_type = 3;
+    #ifdef DO_PREF
+    prefetch_line(ip, addr, pf_address, FILL_L2, metadata);
+    #endif
+    SIG_DP(cout << "1, ");
+}
+
+// update the IP table entries
+trackers[cpu][index].last_cl_offset = cl_offset;
+trackers[cpu][index].page_tag = curr_tag;
+
+SIG_DP(cout << endl);
+
+	//SPP PREFETCH START
+     page = addr >> LOG2_PAGE_SIZE;
+    uint32_t page_offset = (addr >> LOG2_BLOCK_SIZE) & (PAGE_SIZE / BLOCK_SIZE - 1),
+             last_sig = 0,
+             curr_sig = 0,
+
+             confidence_q[L2C_MSHR_SIZE],
+             depth = 0;
+
+    int32_t  delta = 0,
+             delta_q[L2C_MSHR_SIZE];
+
+    for (uint32_t i = 0; i < L2C_MSHR_SIZE; i++){
+        confidence_q[i] = 0;
+        delta_q[i] = 0;
+    }
+    confidence_q[0] = 100;
+    GHR.global_accuracy = GHR.pf_issued ? ((100 * GHR.pf_useful) / GHR.pf_issued)  : 0;
+
+    SPP_DP (
+        cout << endl << "[ChampSim] " << __func__ << " addr: " << hex << addr << " cache_line: " << (addr >> LOG2_BLOCK_SIZE);
+        cout << " page: " << page << " page_offset: " << dec << page_offset << endl;
+    );
+
+    // Stage 1: Read and update a sig stored in ST
+    // last_sig and delta are used to update (sig, delta) correlation in PT
+    // curr_sig is used to read prefetch candidates in PT
+
+        ST.read_and_update_sig(page, page_offset, last_sig, curr_sig, delta);
+
+    // Also check the prefetch filter in parallel to update global accuracy counters
+    FILTER.check(addr, L2C_DEMAND);
+
+	// Stage 2: Update delta patterns stored in PT
+    if (last_sig) PT.update_pattern(last_sig, delta);
+
+    // Stage 3: Start prefetching
+    uint64_t base_addr = addr;
+    uint32_t lookahead_conf = 100,
+             pf_q_head = 0,
+             pf_q_tail = 0;
+    uint8_t  do_lookahead = 0;
+
+#ifdef LOOKAHEAD_ON
+    do {
+#endif
+        uint32_t lookahead_way = PT_WAY;
+        PT.read_pattern(curr_sig, delta_q, confidence_q, lookahead_way, lookahead_conf, pf_q_tail, depth);
+
+        do_lookahead = 0;
+        for (uint32_t i = pf_q_head; i < pf_q_tail; i++) {
+            if (confidence_q[i] >= PF_THRESHOLD) {
+                uint64_t pf_addr = (base_addr & ~(BLOCK_SIZE - 1)) + (delta_q[i] << LOG2_BLOCK_SIZE);
+
+if ((addr & ~(PAGE_SIZE - 1)) == (pf_addr & ~(PAGE_SIZE - 1))) { // Prefetch request is in the same physical page
+                    if (FILTER.check(pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? SPP_L2C_PREFETCH : SPP_LLC_PREFETCH))) {
+
+                                                if(prefetch_line(ip, addr, pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? FILL_L2 : FILL_LLC), 0)){ // Use addr (not base_addr) to obey the same physical page boundary
+                                                        depth_track[depth]++;
+                                                        FILTER.add_to_filter(pf_addr, ((confidence_q[i] >= FILL_THRESHOLD) ? SPP_L2C_PREFETCH : SPP_LLC_PREFETCH));
+                                                }else{
+                                                        prefetch_q_full++;
+                                                }
+
+		if (confidence_q[i] >= FILL_THRESHOLD) {
+                            GHR.pf_issued++;    //global issued incremented if filled in L2.
+                            if (GHR.pf_issued > GLOBAL_COUNTER_MAX) {
+                                GHR.pf_issued >>= 1;
+                                GHR.pf_useful >>= 1;
+                            }
+                            SPP_DP (cout << "[ChampSim] SPP L2 prefetch issued GHR.pf_issued: " << GHR.pf_issued << " GHR.pf_useful: " << GHR.pf_useful << endl;);
+                        }
+
+SPP_DP (
+                            cout << "[ChampSim] " << __func__ << " base_addr: " << hex << base_addr << " pf_addr: " << pf_addr;
+                            cout << " pf_cache_line: " << (pf_addr >> LOG2_BLOCK_SIZE);
+                            cout << " prefetch_delta: " << dec << delta_q[i] << " confidence: " << confidence_q[i];
+                            cout << " depth: " << i << " fill_level: " << ((confidence_q[i] >= FILL_THRESHOLD) ? FILL_L2 : FILL_LLC) << endl;
+                        );
+                    }else{      //So here, the depth frequency is tracked.
+                                                depth_lost_at_filter[depth]++;
+                                        }
+                } else { // Prefetch request is crossing the physical page boundary
+#ifdef GHR_ON
+                    // Store this prefetch request in GHR to bootstrap SPP learning when we see a ST miss (i.e., accessing a new page)
+                    GHR.update_entry(curr_sig, confidence_q[i], (pf_addr >> LOG2_BLOCK_SIZE) & 0x3F, delta_q[i]);
+#endif
+                                        depth_lost_at_page[depth]++;
+                }
+
+                do_lookahead = 1;
+                pf_q_head++;
+            }
+        }
+	
+// Update base_addr and curr_sig
+        if (lookahead_way < PT_WAY) {
+            uint32_t set = get_hash(curr_sig) % PT_SET;
+            base_addr += (PT.delta[set][lookahead_way] << LOG2_BLOCK_SIZE);
+
+            // PT.delta uses a 7-bit sign magnitude representation to generate sig_delta
+            //int sig_delta = (PT.delta[set][lookahead_way] < 0) ? ((((-1) * PT.delta[set][lookahead_way]) & 0x3F) + 0x40) : PT.delta[set][lookahead_way];
+            int sig_delta = (PT.delta[set][lookahead_way] < 0) ? (((-1) * PT.delta[set][lookahead_way]) + (1 << (SIG_DELTA_BIT - 1))) : PT.delta[set][lookahead_way];
+            curr_sig = ((curr_sig << SIG_SHIFT) ^ sig_delta) & SIG_MASK;
+        }
+
+        SPP_DP (
+            cout << "Looping curr_sig: " << hex << curr_sig << " base_addr: " << base_addr << dec;
+            cout << " pf_q_head: " << pf_q_head << " pf_q_tail: " << pf_q_tail << " depth: " << depth << endl;
+        );
+#ifdef LOOKAHEAD_ON
+    } while (do_lookahead);
+#endif
+
+
+  return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+
+if(prefetch){
+uint32_t pref_type = metadata_in & 0xF00;
+pref_type = pref_type >> 8;
+
+uint64_t index = hash_bloom_l2(addr);
+if(stats_l2[cpu][pref_type].bl_request[index] == 1){
+    stats_l2[cpu][pref_type].bl_filled[index] = 1;
+    stats_l2[cpu][pref_type].bl_request[index] = 0;
+}
+}
+
+#ifdef FILTER_ON
+    SPP_DP (cout << endl;);
+    FILTER.check(evicted_addr, L2C_EVICT);
+#endif
+
+  return metadata_in;
+}
+
+void CACHE::l2c_prefetcher_final_stats()
+{
+	//ipcp_stats_print();
+	spp_stats_print();
+}
