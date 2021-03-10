@@ -1005,6 +1005,8 @@ int main(int argc, char** argv)
 	ooo_cpu[i].PTW.PSCL4.cache_type = IS_PSCL4;
 	ooo_cpu[i].PTW.PSCL3.cache_type = IS_PSCL3;
 	ooo_cpu[i].PTW.PSCL2.cache_type = IS_PSCL2;
+	ooo_cpu[i].PTW.PSCL2_VB.cache_type = IS_PSCL2_VB;
+	ooo_cpu[i].PTW.PSCL2.PSCL2_initialize_replacement();
 
 	if(i >= ACCELERATOR_START){
 		ooo_cpu[i].SCRATCHPAD.cpu = i;
@@ -1281,6 +1283,7 @@ int main(int argc, char** argv)
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
+		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
 
                 all_simulation_complete++;
             }
@@ -1308,7 +1311,7 @@ int main(int argc, char** argv)
             cout << j->first << "      " << j->second << endl;
 
  //   cout << endl << "ChampSim completed all CPUs" << endl;
-    if (NUM_CPUS > 1) {
+    if (NUM_CPUS >= 1) {
         cout << endl << "Total Simulation Statistics (not including warmup)" << endl;
 	cout << ooo_cpu[ACCELERATOR_START].PTW.rq_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.rq_count_cycle << " ad " << ooo_cpu[ACCELERATOR_START].PTW.mshr_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.mshr_count_cycle << " PREF MSHR " <<  ooo_cpu[ACCELERATOR_START].PTW.prefetch_mshr_entries << endl;
 	    cout << " PTW average entries RQ : " << setw(10) << ooo_cpu[ACCELERATOR_START].PTW.rq_entries * 1.0 / ooo_cpu[ACCELERATOR_START].PTW.rq_count_cycle  << setw(10) << "  MSHR : " << setw(10) << ooo_cpu[ACCELERATOR_START].PTW.mshr_entries * 1.0 /  ooo_cpu[ACCELERATOR_START].PTW.mshr_count_cycle << setw(10) << " PREF MSHR: " << setw(10) << ooo_cpu[ACCELERATOR_START].PTW.prefetch_mshr_entries*1.0  / ooo_cpu[ACCELERATOR_START].PTW.prefetch_mshr_count_cycle << setw(10) << " PQ : " << setw(10) << ooo_cpu[ACCELERATOR_START].PTW.pq_entries * 1.0 / ooo_cpu[ACCELERATOR_START].PTW.pq_count_cycle << endl;
@@ -1342,6 +1345,7 @@ int main(int argc, char** argv)
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2);
+		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
 	    }
 
 	    if(i< ACCELERATOR_START){
@@ -1362,7 +1366,7 @@ int main(int argc, char** argv)
         }
         uncore.LLC.llc_prefetcher_final_stats();
     }
-/*
+
     cout << endl << "Region of Interest Statistics" << endl;
     for (uint32_t i=0; i<NUM_CPUS; i++) {
         cout << endl << "CPU " << i << " cumulative IPC: " << ((float) ooo_cpu[i].finish_sim_instr / ooo_cpu[i].finish_sim_cycle); 
@@ -1388,6 +1392,7 @@ int main(int argc, char** argv)
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
+		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
 	}
 #endif
 #ifdef PUSH_DTLB_PB
@@ -1422,7 +1427,7 @@ int main(int argc, char** argv)
 
     cout<<"DRAM PAGES: "<<DRAM_PAGES<<endl;
     cout<<"Allocated PAGES: "<<allocated_pages<<endl;
-*/
+
     return 0;
 }
 

@@ -865,23 +865,24 @@ int PAGE_TABLE_WALKER::add_prefetch_mshr(PACKET *packet)
 
 void PAGE_TABLE_WALKER::fill_mmu_cache(CACHE &cache, uint64_t next_level_base_addr, PACKET *packet, uint8_t cache_type)
 {
-    cache.MSHR.entry[0].fill_level = 0;
-    cache.MSHR.entry[0].cpu = packet->cpu;
-    cache.MSHR.entry[0].address = get_index(packet->full_virtual_address,cache_type);
-    cache.MSHR.entry[0].full_addr = get_index(packet->full_virtual_address,cache_type);
-    cache.MSHR.entry[0].data = next_level_base_addr;
-    cache.MSHR.entry[0].instr_id = packet->instr_id;
-    cache.MSHR.entry[0].ip = 0;
-    cache.MSHR.entry[0].type = TRANSLATION;
-    cache.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
+	cache.MSHR.entry[0].cpu = packet->cpu;
+	cache.MSHR.entry[0].address = get_index(packet->full_virtual_address,cache_type);
+	cache.MSHR.entry[0].full_addr = get_index(packet->full_virtual_address,cache_type);
+	cache.MSHR.entry[0].data = next_level_base_addr;
+	cache.MSHR.entry[0].instr_id = packet->instr_id;
 
-    cache.MSHR.next_fill_index = 0;
-    cache.MSHR.next_fill_cycle = current_core_cycle[cpu];
+	cache.MSHR.entry[0].ip = 0;
+	cache.MSHR.entry[0].fill_level = 0;
+	cache.MSHR.entry[0].type = TRANSLATION;
+	cache.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
 
-    cache.MSHR.occupancy = 1;
-    cache.handle_fill();
+	cache.MSHR.next_fill_index = 0;
+	cache.MSHR.next_fill_cycle = current_core_cycle[cpu];
 
-    //cout << "["<< cache.NAME << "]" << "Miss: "<< cache.sim_miss[cpu][TRANSLATION] << endl;
+	cache.MSHR.occupancy = 1;
+	cache.handle_fill();
+
+	//cout << "["<< cache.NAME << "]" << "Miss: "<< cache.sim_miss[cpu][TRANSLATION] << endl;
 }
 
 uint64_t PAGE_TABLE_WALKER::get_index(uint64_t address, uint8_t cache_type)
@@ -941,16 +942,46 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address)
 				    cout << "Hit " <<current_core_cycle[cpu]<< " "   <<setw(10) << (address)  << endl;
 				    });
 	    }
+	    if(cache.cache_type == IS_PSCL2){
+		  //  cout << "calling for hit \n"; 
+		    cache.PSCL2_update_replacement_state(cpu, set, way, cache.block[set][way].full_addr,0 , 0, TRANSLATION, 1);
+	    }
 	    return cache.block[set][way].data;
         }
     }
 
     if(cache.cache_type == IS_PSCL2){
+	    //check for victim buffer at PSCL2
+	    for (uint32_t way=0; way<PSCL2_VB.NUM_WAY; way++) {
+		    if (PSCL2_VB.block[set][way].valid && (PSCL2_VB.block[set][way].tag == address)) {
+			    
 
-                DTLBPRINT(if( warmup_complete[cpu] ){
-                                cout <<"Miss " << current_core_cycle[cpu]<< " "   <<setw(10) << (address)  << endl;
-                                });
-        }
+			    // COLLECT STATS
+			    PSCL2_VB.sim_hit[cpu][TRANSLATION]++;
+			    PSCL2_VB.sim_access[cpu][TRANSLATION]++;
+			    PSCL2_VB.block[set][way].valid = 0;
+
+			    PSCL2.MSHR.entry[0].fill_level = 0;
+			    PSCL2.MSHR.entry[0].cpu = PSCL2_VB.block[set][way].cpu;
+			    PSCL2.MSHR.entry[0].address =  PSCL2_VB.block[set][way].address;
+			    PSCL2.MSHR.entry[0].full_addr = PSCL2_VB.block[set][way].full_addr;
+			    PSCL2.MSHR.entry[0].data = PSCL2_VB.block[set][way].data;
+			    PSCL2.MSHR.entry[0].instr_id = PSCL2_VB.block[set][way].instr_id;
+			    PSCL2.MSHR.entry[0].ip = 0;
+			    PSCL2.MSHR.entry[0].type = TRANSLATION;
+			    PSCL2.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
+			    PSCL2.MSHR.next_fill_index = 0;
+			    PSCL2.MSHR.next_fill_cycle = current_core_cycle[cpu];
+			    PSCL2.MSHR.occupancy = 1;
+			    PSCL2.handle_fill();
+
+			    return PSCL2_VB.block[set][way].data;
+		    }
+	    }
+	    PSCL2_VB.sim_miss[cpu][TRANSLATION]++;
+	    PSCL2_VB.sim_access[cpu][TRANSLATION]++;
+
+    }
     return UINT64_MAX;
 }
     

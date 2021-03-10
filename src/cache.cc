@@ -204,6 +204,7 @@ void CACHE::handle_fill()
                 MSHR.queuePrint();
         }
 	)
+// 	cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
 	uint32_t fill_cpu = (MSHR.next_fill_index == MSHR_SIZE) ? NUM_CPUS : MSHR.entry[MSHR.next_fill_index].cpu;
 	if(ITLB_FLAG)
 		cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
@@ -224,6 +225,9 @@ void CACHE::handle_fill()
 		if (cache_type == IS_LLC) {
 			way = llc_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
+		if(cache_type == IS_PSCL2){
+			way = PSCL2_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
+		}
 		else
 			way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 
@@ -233,6 +237,10 @@ void CACHE::handle_fill()
 			// update replacement policy
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+
+			}
+			else if (cache_type == IS_PSCL2) {
+				PSCL2_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
 			}
 			else
@@ -338,6 +346,26 @@ void CACHE::handle_fill()
 			// update replacement policy
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
+			}
+			else if (cache_type == IS_PSCL2) {
+				if(block[set][way].valid){
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].fill_level = 0;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].cpu = block[set][way].cpu;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].address =  block[set][way].address;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].full_addr = block[set][way].full_addr;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].data = block[set][way].data;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].instr_id = block[set][way].instr_id;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].ip = 0;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].type = TRANSLATION;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.next_fill_index = 0;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.next_fill_cycle = current_core_cycle[cpu];
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.occupancy = 1;
+					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.handle_fill();
+
+				}
+				PSCL2_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+
 			}
 			else
 				update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
@@ -616,6 +644,10 @@ if (writeback_cpu == NUM_CPUS)
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 			}
+			else if (cache_type == IS_PSCL2) {
+				PSCL2_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
+
+			}
 			else
 				update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 
@@ -827,6 +859,10 @@ if (writeback_cpu == NUM_CPUS)
 					// update replacement policy
 					if (cache_type == IS_LLC) {
 						llc_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+					}
+					else if (cache_type == IS_PSCL2) {
+						PSCL2_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+
 					}
 					else
 						update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
