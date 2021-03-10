@@ -1,0 +1,1 @@
+mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-8accelerator ptw2_victim_lru1_8acc; mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-4accelerator ptw2_victim_lru1_4acc; mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-1accelerator ptw2_victim_lru1_1acc
