@@ -53,7 +53,10 @@ uint32_t CACHE::lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const 
         assert(0);
     }
 
-    return way;
+/*    if(cache_type == IS_PSCL2){
+    	cout << "LRU instru id " << instr_id << " set " << set << " way " << way << endl;
+    }*/
+   return way;
 }
 
 void CACHE::lru_update(uint32_t set, uint32_t way)
