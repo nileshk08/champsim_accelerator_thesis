@@ -49,7 +49,7 @@
 #define STLBPRINT(x)  
 #define PRINT77(x) 
 #define SPRINT(x) 
-#define DTLBPRINT(x) x 
+#define DTLBPRINT(x)  
 #define SCRATCHPADPRINT(x)  
 
 // CPU

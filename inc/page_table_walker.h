@@ -8,11 +8,17 @@
 #define PSCL4_SET 1
 #define PSCL4_WAY 4
 
-#define PSCL3_SET 4
+#define PSCL3_SET 2
 #define PSCL3_WAY 4
 
-#define PSCL2_SET 8
+#define PSCL2_SET 4
 #define PSCL2_WAY 8
+
+#define PSCL2_VB_SET 4
+#define PSCL2_VB_WAY 8
+
+#define PSCL2_PB_SET 1
+#define PSCL2_PB_WAY 16
 
 #define PTW_RQ_SIZE 128//Should be greater than or equal to STLB MSHR Size
 #define PTW_WQ_SIZE 16
@@ -29,6 +35,7 @@
 #define IS_PTL3 3
 #define IS_PTL4 4
 #define IS_PTL5 5
+#define IS_PTL2_VB 6
 
 //Virtual Address: 57 bit (9+9+9+9+9+12), rest MSB bits will be used to generate a unique VA per CPU.
 //PTL5->PTL4->PTL3->PTL2->PTL1->PFN
@@ -87,7 +94,9 @@ class PAGE_TABLE_WALKER : public MEMORY {
     CACHE PSCL5{"PSCL5", PSCL5_SET, PSCL5_WAY, PSCL5_SET*PSCL5_WAY, 0, 0, 0, 1}, //Translation from L5->L4
           PSCL4{"PSCL4", PSCL4_SET, PSCL4_WAY, PSCL4_SET*PSCL4_WAY, 0, 0, 0, 1}, //Translation from L5->L3
           PSCL3{"PSCL3", PSCL3_SET, PSCL3_WAY, PSCL3_SET*PSCL3_WAY, 0, 0, 0, 1}, //Translation from L5->L2
-          PSCL2{"PSCL2", PSCL2_SET, PSCL2_WAY, PSCL2_SET*PSCL2_WAY, 0, 0, 0, 1}; //Translation from L5->L1
+          PSCL2{"PSCL2", PSCL2_SET, PSCL2_WAY, PSCL2_SET*PSCL2_WAY, 0, 0, 0, 1}, //Translation from L5->L1
+          PSCL2_VB{"PSCL2_VB", PSCL2_VB_SET, PSCL2_VB_WAY, PSCL2_VB_SET*PSCL2_VB_WAY, 0, 0, 0, 1}, //Victim Buffer for PTL2
+          PSCL2_PB{"PSCL2_PB", PSCL2_PB_SET, PSCL2_PB_WAY, PSCL2_PB_SET*PSCL2_PB_WAY, 0, 0, 0, 1}; //Prefetch Buffer Victim Buffer for PTL2
 
     PAGE_TABLE_PAGE *L5; //CR3 register points to the base of this page.
     uint64_t CR3_addr; //This address will not have page offset bits.

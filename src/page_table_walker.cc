@@ -7,7 +7,7 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
         uint8_t mshr_size = mshr_type ? PTW_MSHR_SIZE : PTW_PREFETCH_MSHR_SIZE;
 //	if(MSHR.occupancy > 0) //Handle pending request, only one request is serviced at a time.
 	for(int index = 0; index < mshr_size; index++){
-		if((temp_mshr->entry[index].ip != 0) && (temp_mshr->entry[index].returned == COMPLETED) && (temp_mshr->entry[index].event_cycle <= current_core_cycle[cpu])) //Check if current level translation complete
+		if((temp_mshr->entry[index].ip != 0 || !mshr_type) && (temp_mshr->entry[index].returned == COMPLETED) && (temp_mshr->entry[index].event_cycle <= current_core_cycle[cpu])) //Check if current level translation complete
 		{
 			//int index = temp_mshr->head;
 
@@ -32,8 +32,11 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 				curr_page = curr_page->entry[offset];
 			}
 
-			if(temp_mshr->entry[index].translation_level == 0) //If translation complete
+			if((mshr_type && temp_mshr->entry[index].translation_level == 0) || (!mshr_type && temp_mshr-> entry[index].translation_level <= 1)) //If translation complete
 			{
+				if(!mshr_type){
+//					cout << " translation compleete " << temp_mshr->entry[index].full_virtual_address << " translation level" << (int)temp_mshr->entry[index].translation_level << endl;
+				}
 				curr_page = L5;
 				next_level_base_addr = UINT64_MAX;
 				for (int i = 5; i > 1; i--) //Walk the page table and fill MMU caches
@@ -54,58 +57,64 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 								break;
 							case 3: fill_mmu_cache(PSCL3, next_level_base_addr, &temp_mshr->entry[index], IS_PSCL3);
 								break;
-							case 2: fill_mmu_cache(PSCL2, next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2);
+							case 2:
+								if(mshr_type)
+								fill_mmu_cache(PSCL2, next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2);
+								else
+								fill_mmu_cache(PSCL2_PB,next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2_PB);
 								break;
 						}
 					}
 				}
+				if(mshr_type){ //@Nilesh: Will not execute for prefetch buffer of PTL2
 
-				uint64_t offset = get_offset(temp_mshr->entry[index].full_virtual_address, IS_PTL1);
-				next_level_base_addr = curr_page->next_level_base_addr[offset];
+					uint64_t offset = get_offset(temp_mshr->entry[index].full_virtual_address, IS_PTL1);
+					next_level_base_addr = curr_page->next_level_base_addr[offset];
 
-				if(page_fault)
-					temp_mshr->entry[index].event_cycle = stall_cycle[cpu]; //It is updated according to whether is required page swap or not.
-				else
-					temp_mshr->entry[index].event_cycle = current_core_cycle[cpu];	
+					if(page_fault)
+						temp_mshr->entry[index].event_cycle = stall_cycle[cpu]; //It is updated according to whether is required page swap or not.
+					else
+						temp_mshr->entry[index].event_cycle = current_core_cycle[cpu];	
 
 
-				temp_mshr->entry[index].data = next_level_base_addr << LOG2_PAGE_SIZE | (temp_mshr->entry[index].full_virtual_address && ((1<<LOG2_PAGE_SIZE) - 1)); //Return the translated physical address to STLB
+					temp_mshr->entry[index].data = next_level_base_addr << LOG2_PAGE_SIZE | (temp_mshr->entry[index].full_virtual_address && ((1<<LOG2_PAGE_SIZE) - 1)); //Return the translated physical address to STLB
 
-				if (knob_cloudsuite && cpu < ACCELERATOR_START )
-				{
-					if(temp_mshr->entry[index].instruction)
+					if (knob_cloudsuite && cpu < ACCELERATOR_START )
 					{
-						temp_mshr->entry[index].address = (( temp_mshr->entry[index].ip >> LOG2_PAGE_SIZE) << 9) | ( 256 + temp_mshr->entry[index].asid[0]);	
+						if(temp_mshr->entry[index].instruction)
+						{
+							temp_mshr->entry[index].address = (( temp_mshr->entry[index].ip >> LOG2_PAGE_SIZE) << 9) | ( 256 + temp_mshr->entry[index].asid[0]);	
+						}
+						else
+						{
+							temp_mshr->entry[index].address = (( temp_mshr->entry[index].full_virtual_address >> LOG2_PAGE_SIZE) << 9) |  temp_mshr->entry[index].asid[1];
+						}
 					}
 					else
 					{
-						temp_mshr->entry[index].address = (( temp_mshr->entry[index].full_virtual_address >> LOG2_PAGE_SIZE) << 9) |  temp_mshr->entry[index].asid[1];
+						temp_mshr->entry[index].address = temp_mshr->entry[index].full_virtual_address >> LOG2_PAGE_SIZE;
 					}
-				}
-				else
-				{
-					temp_mshr->entry[index].address = temp_mshr->entry[index].full_virtual_address >> LOG2_PAGE_SIZE;
-				}
 
-				temp_mshr->entry[index].full_addr = temp_mshr->entry[index].full_virtual_address;
-		//		SCRATCHPADPRINT(cout << "address in PTW MSHR " << temp_mshr->entry[index].address << " full_virt " << temp_mshr->entry[index].full_virtual_address << " instr id " << temp_mshr->entry[index].instr_id << " cpu " << temp_mshr->entry[index].cpu << endl;)
+					temp_mshr->entry[index].full_addr = temp_mshr->entry[index].full_virtual_address;
+					//		SCRATCHPADPRINT(cout << "address in PTW MSHR " << temp_mshr->entry[index].address << " full_virt " << temp_mshr->entry[index].full_virtual_address << " instr id " << temp_mshr->entry[index].instr_id << " cpu " << temp_mshr->entry[index].cpu << endl;)
 
-				PRINT77(cout << "return data from PTW 1"<< endl;)
-					if (warmup_complete[cpu] && temp_mshr->entry[index].ptw_start_cycle > 0 && current_core_cycle[cpu] - temp_mshr->entry[index].ptw_start_cycle >= LATENCY){
-						PTW_rq++;
-						PTW_latency += current_core_cycle[cpu] - temp_mshr->entry[index].ptw_start_cycle ;
+					PRINT77(cout << "return data from PTW 1"<< endl;)
+						if (warmup_complete[cpu] && temp_mshr->entry[index].ptw_start_cycle > 0 && current_core_cycle[cpu] - temp_mshr->entry[index].ptw_start_cycle >= LATENCY){
+							PTW_rq++;
+							PTW_latency += current_core_cycle[cpu] - temp_mshr->entry[index].ptw_start_cycle ;
+						}
+					if (temp_mshr->entry[index].instruction)
+						upper_level_icache[cpu]->return_data(&temp_mshr->entry[index]);
+					else // data
+						upper_level_dcache[cpu]->return_data(&temp_mshr->entry[index]);
+
+					if(warmup_complete[cpu])
+					{
+						uint64_t current_miss_latency = (current_core_cycle[cpu] - temp_mshr->entry[index].cycle_enqueued);	
+						total_miss_latency += current_miss_latency;
 					}
-				if (temp_mshr->entry[index].instruction)
-					upper_level_icache[cpu]->return_data(&temp_mshr->entry[index]);
-				else // data
-					upper_level_dcache[cpu]->return_data(&temp_mshr->entry[index]);
 
-				if(warmup_complete[cpu])
-				{
-					uint64_t current_miss_latency = (current_core_cycle[cpu] - temp_mshr->entry[index].cycle_enqueued);	
-					total_miss_latency += current_miss_latency;
 				}
-
 				temp_mshr->remove_queue(&temp_mshr->entry[index]);
 			}
 			else
@@ -311,7 +320,6 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 }
 void PAGE_TABLE_WALKER::handle_PQ(){
 
-	if(PQ.occupancy > 0) 
 	{
 			 PRINT(cout << "index in handle_PQ " << PQ.head << " occupance " << PQ.occupancy<< endl;
 				cout << "entry = " << PQ.entry[PQ.head].event_cycle << endl;	 
@@ -327,14 +335,14 @@ void PAGE_TABLE_WALKER::handle_PQ(){
 		}
 		if(flag){
                          int index = PQ.head;
-			 PRINT(cout << "index in handle_PQ " << index << endl;) 
                           //cout << hex << PQ.entry[index].full_addr << dec << endl;
                          assert((PQ.entry[index].full_addr >> 32) != 0xf000000f); //Page table is stored at this address
                          assert(PQ.entry[index].full_virtual_address != 0);
- 
-                         uint64_t address_pscl5 = check_hit(PSCL5,get_index(PQ.entry[index].full_addr,IS_PSCL5));
+ 			//@Nilesh: Commented for PTL2 prefetching
+                        /* uint64_t address_pscl5 = check_hit(PSCL5,get_index(PQ.entry[index].full_addr,IS_PSCL5));
                          uint64_t address_pscl4 = check_hit(PSCL4,get_index(PQ.entry[index].full_addr,IS_PSCL4));
                          uint64_t address_pscl3 = check_hit(PSCL3,get_index(PQ.entry[index].full_addr,IS_PSCL3));
+			*/
 			 uint64_t address_pscl2 = check_hit(PSCL2,get_index(PQ.entry[index].full_addr,IS_PSCL2));
 
                          PACKET packet = PQ.entry[index];
@@ -345,15 +353,17 @@ void PAGE_TABLE_WALKER::handle_PQ(){
              		 packet.type = PREFETCH;
              		 packet.event_cycle = current_core_cycle[cpu];
              		 packet.full_virtual_address = PQ.entry[index].full_addr;
+			 packet.translation_level = 2;
 		
 			 uint64_t next_address = UINT64_MAX;
 	
 	                 if(address_pscl2 != UINT64_MAX)
 	                 {
+				 cout << " pscl2 in handle PQ  " << address_pscl2 << endl; 
         	                  next_address = address_pscl2 << LOG2_PAGE_SIZE | (get_offset(PQ.entry[index].full_addr,IS_PTL1) << 3);
                 		  packet.translation_level = 1;
                          }
-                         else if(address_pscl3 != UINT64_MAX)
+                         /*else if(address_pscl3 != UINT64_MAX)
                          {
                                  next_address = address_pscl3 << LOG2_PAGE_SIZE | (get_offset(PQ.entry[index].full_addr,IS_PTL2) << 3);
                  		 packet.translation_level = 2;
@@ -419,39 +429,40 @@ void PAGE_TABLE_WALKER::handle_PQ(){
 		     }
 		     next_address = CR3_addr << LOG2_PAGE_SIZE | (get_offset(PQ.entry[index].full_addr,IS_PTL5) << 3);
                      packet.translation_level = 5;
-	     }
-	      packet.init_translation_level = packet.translation_level;
-                        packet.address = next_address >> LOG2_BLOCK_SIZE;
-            packet.full_addr = next_address;
+	     }*/
+//	      packet.init_translation_level = packet.translation_level;
+			 packet.init_translation_level = 2;   // @Nilesh: for PTL2 prefetching
+			 packet.address = next_address >> LOG2_BLOCK_SIZE;
+			 packet.full_addr = next_address;
 
-		    add_prefetch_mshr(&packet);
-                    //    int rq_index = ooo_cpu[cpu].L2C.add_rq(&packet);
-			int rq_index;
-			if(cpu < ACCELERATOR_START){
-				rq_index = ooo_cpu[cpu].L2C.add_rq(&packet);//Packet should not merge as one translation is sent at a time.
-				assert(rq_index == -1);
-			}
-			else{
-				if(all_warmup_complete < NUM_CPUS){
-					uncore.DRAM.add_rq(&packet);
-				}
-				else{
-					rq_index = uncore.DRAM.add_rq(&packet);
-					if(rq_index != -1){
+			 add_prefetch_mshr(&packet);
+			 //    int rq_index = ooo_cpu[cpu].L2C.add_rq(&packet);
+			 int rq_index;
+			 if(cpu < ACCELERATOR_START){
+				 rq_index = ooo_cpu[cpu].L2C.add_rq(&packet);//Packet should not merge as one translation is sent at a time.
+				 assert(rq_index == -1);
+			 }
+			 else{
+				 if(all_warmup_complete < NUM_CPUS){
+					 uncore.DRAM.add_rq(&packet);
+				 }
+				 else{
+					 rq_index = uncore.DRAM.add_rq(&packet);
+					 if(rq_index != -1){
 
-						cout << "rq_index " << rq_index << " cpu " << cpu << " packet->cpu " << packet.cpu  <<" instrid " << packet.instr_id <<  endl;
-					}
-					assert(rq_index != -2);
-				}
-			}
-                    //cout << rq_index<< endl; //@Vishal: Remove this
-                    /*if(rq_index < -1)
-                    {
-                            assert(0);
-                    }*/
-                 //   assert(rq_index == -1); //Packet should not merge as one translation is sent at a time.
+						 cout << "rq_index " << rq_index << " cpu " << cpu << " packet->cpu " << packet.cpu  <<" instrid " << packet.instr_id <<  endl;
+					 }
+					 assert(rq_index != -2);
+				 }
+			 }
+			 //cout << rq_index<< endl; //@Vishal: Remove this
+			 /*if(rq_index < -1)
+			   {
+			   assert(0);
+			   }*/
+			 //   assert(rq_index == -1); //Packet should not merge as one translation is sent at a time.
 
-                    PQ.remove_queue(&PQ.entry[index]);
+			 PQ.remove_queue(&PQ.entry[index]);
 		}
 	}	
 }
@@ -475,11 +486,11 @@ void PAGE_TABLE_WALKER::operate()
 	}*/
 	
 	if(cpu >= ACCELERATOR_START){
-/*		cout << "*************************** cpu " << cpu << endl;
+	/*	cout << "*************************** cpu " << cpu << endl;
                 cout << "occupancy mshr " << MSHR.occupancy << " rq " << RQ.occupancy << " PQ " << PQ.occupancy << endl;
-                cout << "cache type "<< NAME << " RQ occupancy " << RQ.occupancy << endl;
-                RQ.queuePrint();
-                cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
+                cout << "cache type "<< NAME << " PQ occupancy " << PQ.occupancy << endl;
+                PQ.queuePrint();
+       /*         cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
                 MSHR.queuePrint();
 */
 		int handle_width = IOMMU_PTW_HANDLE - MSHR.occupancy;
@@ -490,6 +501,8 @@ void PAGE_TABLE_WALKER::operate()
 			handle_RQ();
 		}
 		handle_width = PTW_PREFETCH_MSHR_SIZE - PREFETCH_MSHR.occupancy;
+/*		cout << "handle width " << handle_width << " mshr occ " << PREFETCH_MSHR.occupancy << " rq " << RQ.occupancy << " pq " << PQ.occupancy << endl;    
+		PREFETCH_MSHR.queuePrint();*/
 		handle_fill(0);
                 while(PQ.occupancy && handle_width){
                         handle_width--;
@@ -834,7 +847,7 @@ int PAGE_TABLE_WALKER::add_prefetch_mshr(PACKET *packet)
         packet->ptw_mshr_index = index;
         packet->cycle_enqueued = current_core_cycle[packet->cpu];
     for(int i=0;i < PREFETCH_MSHR.SIZE; i++){
-        if(PREFETCH_MSHR.entry[i].ip == 0)
+        if(PREFETCH_MSHR.entry[i].address== 0)
                 index = i;
     }
 
@@ -878,6 +891,10 @@ void PAGE_TABLE_WALKER::fill_mmu_cache(CACHE &cache, uint64_t next_level_base_ad
 
 	cache.MSHR.next_fill_index = 0;
 	cache.MSHR.next_fill_cycle = current_core_cycle[cpu];
+/*	if(cache_type == IS_PSCL2 || cache_type == IS_PSCL2_PB){
+		cout << (int)cache_type << " address " << cache.MSHR.entry[0].address << endl;
+	
+	}*/
 
 	cache.MSHR.occupancy = 1;
 	cache.handle_fill();
@@ -949,24 +966,29 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address)
 	    return cache.block[set][way].data;
         }
     }
-
+    cache.sim_miss[cpu][TRANSLATION]++;
+    cache.sim_access[cpu][TRANSLATION]++;
+/*    if(warmup_complete[cpu])
+	    return 5;			// added for ideal ptl2
+*/
     if(cache.cache_type == IS_PSCL2){
-	    //check for victim buffer at PSCL2
-	    for (uint32_t way=0; way<PSCL2_VB.NUM_WAY; way++) {
-		    if (PSCL2_VB.block[set][way].valid && (PSCL2_VB.block[set][way].tag == address)) {
+	    return check_hit(PSCL2_PB,address);
+	    //check for prefetch buffer at PSCL2
+/*	    for (uint32_t way=0; way<PSCL2_PB.NUM_WAY; way++) {
+		    if (PSCL2_PB.block[1][way].valid && (PSCL2_PB.block[1][way].tag == address)) {
 			    
 
 			    // COLLECT STATS
-			    PSCL2_VB.sim_hit[cpu][TRANSLATION]++;
-			    PSCL2_VB.sim_access[cpu][TRANSLATION]++;
-			    PSCL2_VB.block[set][way].valid = 0;
+			    PSCL2_PB.sim_hit[cpu][TRANSLATION]++;
+			    PSCL2_PB.sim_access[cpu][TRANSLATION]++;
+			    PSCL2_PB.block[set][way].valid = 0;
 
 			    PSCL2.MSHR.entry[0].fill_level = 0;
-			    PSCL2.MSHR.entry[0].cpu = PSCL2_VB.block[set][way].cpu;
-			    PSCL2.MSHR.entry[0].address =  PSCL2_VB.block[set][way].address;
-			    PSCL2.MSHR.entry[0].full_addr = PSCL2_VB.block[set][way].full_addr;
-			    PSCL2.MSHR.entry[0].data = PSCL2_VB.block[set][way].data;
-			    PSCL2.MSHR.entry[0].instr_id = PSCL2_VB.block[set][way].instr_id;
+			    PSCL2.MSHR.entry[0].cpu = PSCL2_PB.block[1][way].cpu;
+			    PSCL2.MSHR.entry[0].address =  PSCL2_PB.block[1][way].address;
+			    PSCL2.MSHR.entry[0].full_addr = PSCL2_PB.block[1][way].full_addr;
+			    PSCL2.MSHR.entry[0].data = PSCL2_PB.block[1][way].data;
+			    PSCL2.MSHR.entry[0].instr_id = PSCL2_PB.block[1][way].instr_id;
 			    PSCL2.MSHR.entry[0].ip = 0;
 			    PSCL2.MSHR.entry[0].type = TRANSLATION;
 			    PSCL2.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
@@ -975,12 +997,12 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address)
 			    PSCL2.MSHR.occupancy = 1;
 			    PSCL2.handle_fill();
 
-			    return PSCL2_VB.block[set][way].data;
+			    return PSCL2_PB.block[1][way].data;
 		    }
 	    }
-	    PSCL2_VB.sim_miss[cpu][TRANSLATION]++;
-	    PSCL2_VB.sim_access[cpu][TRANSLATION]++;
-
+	    PSCL2_PB.sim_miss[cpu][TRANSLATION]++;
+	    PSCL2_PB.sim_access[cpu][TRANSLATION]++;
+*/
     }
     return UINT64_MAX;
 }
@@ -1085,6 +1107,11 @@ int PAGE_TABLE_WALKER::add_pq(PACKET *packet)
 {
 	//check for duplicates in prefetch queue 
 	int index = PQ.check_queue(packet);
+	if(index != -1)
+		return index;
+	index = check_hit(PSCL2,get_index(packet->full_addr,IS_PSCL2));
+	if(index != UINT64_MAX)
+		return 1;
 	assert(index == -1);
 
 	PRINT(cout << "inside add_pq index " << index << " occupancy " << PQ.occupancy << " packet event=" << packet->event_cycle 	<< endl;)

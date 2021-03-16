@@ -49,11 +49,11 @@
 #define STLBPRINT(x)  
 #define PRINT77(x) 
 #define SPRINT(x) 
-#define DTLBPRINT(x) x 
+#define DTLBPRINT(x)  
 #define SCRATCHPADPRINT(x)  
 
 // CPU
-#define NUM_CPUS 1
+#define NUM_CPUS 8
 #define CPU_FREQ 4000
 #define DRAM_IO_FREQ 6400	//1600	Neelu: Changed
 #define PAGE_SIZE 4096

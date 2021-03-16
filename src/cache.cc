@@ -204,7 +204,7 @@ void CACHE::handle_fill()
                 MSHR.queuePrint();
         }
 	)
-// 	cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
+ 	//cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
 	uint32_t fill_cpu = (MSHR.next_fill_index == MSHR_SIZE) ? NUM_CPUS : MSHR.entry[MSHR.next_fill_index].cpu;
 	if(ITLB_FLAG)
 		cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
@@ -342,13 +342,17 @@ void CACHE::handle_fill()
 						block[set][way].address<<LOG2_BLOCK_SIZE, MSHR.entry[mshr_index].pf_metadata);
 				cpu = 0;
 			}
+			if (cache_type == IS_PSCL2){
+				PSCL2_prefetcher_operate(MSHR.entry[mshr_index].address << LOG2_PAGE_SIZE, MSHR.entry[mshr_index].ip, 1, MSHR.entry[mshr_index].type, MSHR.entry[mshr_index].instr_id, MSHR.entry[mshr_index].instruction, MSHR.entry[mshr_index].asid[0]);
+			}
+//						dtlb_prefetcher_operate(RQ.entry[index].address<<LOG2_PAGE_SIZE, RQ.entry[index].ip, 1, RQ.entry[index].type, RQ.entry[index].instr_id, RQ.entry[index].instruction,RQ.entry[index].asid[0] );
 
 			// update replacement policy
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
 			}
 			else if (cache_type == IS_PSCL2) {
-				if(block[set][way].valid){
+			/*	if(block[set][way].valid){
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].fill_level = 0;
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].cpu = block[set][way].cpu;
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].address =  block[set][way].address;
@@ -363,7 +367,7 @@ void CACHE::handle_fill()
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.occupancy = 1;
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.handle_fill();
 
-				}
+				}*/
 				PSCL2_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
 			}
@@ -1295,8 +1299,8 @@ void CACHE::handle_read()
 				cout << " handle read processing rob id " << RQ.entry[index].rob_index << " packet cpu " << RQ.entry[index].cpu << endl;
 			}
 
-		/*	if(cpu >= ACCELERATOR_START && ( cache_type == IS_DTLB)){
-                                coldMiss_DTLB.insert(RQ.entry[index].address);
+/*			if(cpu >= ACCELERATOR_START && ( cache_type == IS_DTLB)){
+                          //      coldMiss_DTLB.insert(RQ.entry[index].address);
                                 extra_interface->return_data(&RQ.entry[index]);
                                 RQ.remove_queue(&RQ.entry[index]);
 				ACCESS[RQ.entry[index].type]++;
@@ -3305,7 +3309,7 @@ int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level
 {
 	pf_requested++;
 	DP ( if (warmup_complete[cpu]) {cout << "entered prefetch_translation, occupancy = " << PQ.occupancy << "SIZE=" << PQ.SIZE << endl; });
-	if (PQ.occupancy < PQ.SIZE) 
+	if (ooo_cpu[ACCELERATOR_START].PTW.PQ.occupancy < ooo_cpu[ACCELERATOR_START].PTW.PQ.SIZE) 
 	{
 		DP ( if (warmup_complete[cpu]) {cout << "packet entered in PQ" << endl; });
 		PACKET pf_packet;
@@ -3327,7 +3331,12 @@ int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level
 		pf_packet.event_cycle = current_core_cycle[cpu];
 
 		// give a dummy 0 as the IP of a prefetch
-		add_pq(&pf_packet);
+		if(cache_type == IS_PSCL2){
+//			pf_packet.translation_level = 1; 
+			ooo_cpu[ACCELERATOR_START].PTW.add_pq(&pf_packet);
+		}
+		else
+			add_pq(&pf_packet);
 		DP ( if (warmup_complete[pf_packet.cpu]) {cout << "returned from add_pq" << endl; });
 		pf_issued++;
 

@@ -1006,6 +1006,7 @@ int main(int argc, char** argv)
 	ooo_cpu[i].PTW.PSCL3.cache_type = IS_PSCL3;
 	ooo_cpu[i].PTW.PSCL2.cache_type = IS_PSCL2;
 	ooo_cpu[i].PTW.PSCL2_VB.cache_type = IS_PSCL2_VB;
+	ooo_cpu[i].PTW.PSCL2_PB.cache_type = IS_PSCL2_PB;
 	ooo_cpu[i].PTW.PSCL2.PSCL2_initialize_replacement();
 
 	if(i >= ACCELERATOR_START){
@@ -1283,7 +1284,7 @@ int main(int argc, char** argv)
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
+		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
 
                 all_simulation_complete++;
             }
@@ -1345,7 +1346,7 @@ int main(int argc, char** argv)
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
+		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
 	    }
 
 	    if(i< ACCELERATOR_START){
@@ -1392,7 +1393,7 @@ int main(int argc, char** argv)
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_VB);
+		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
 	}
 #endif
 #ifdef PUSH_DTLB_PB

@@ -7,7 +7,7 @@ void PACKET_QUEUE::queuePrint(){
                         ;
 
                         for (uint32_t i=0; i<SIZE; i++) {
-				if(entry[i].address == 0 || entry[i].rob_index == -1)
+				if(entry[i].full_addr == 0 )
 					continue;
 			/*	if(entry[i].instr_id != 91257)
 					continue;
@@ -15,7 +15,7 @@ void PACKET_QUEUE::queuePrint(){
 					continue;
 				if(entry[i].cpu != 3 )
 					continue;*/
-				cout << "index " << i << " cpu "  << entry[i].cpu << " instr id " << entry[i].instr_id << " robid  " << entry[i].rob_index << " returned " << (int)entry[i].returned << " event cycle "<< entry[i].event_cycle <<  " address " << entry[i].address  << " fullvirt add " << entry[i].full_virtual_address << " type " << (int)entry[i].type <<  " is_translation " << (int) entry[i].is_translation << " Instrcution " << (int)entry[i].instruction << " translation level " << (int) entry[i].translation_level << " scheduled " << (int)entry[i].scheduled << endl; 
+				cout << "index " << i << " cpu "  << entry[i].cpu << " instr id " << entry[i].instr_id << " robid  " << entry[i].rob_index << " returned " << (int)entry[i].returned << " event cycle "<< entry[i].event_cycle <<  " address " << entry[i].address  << " fullvirt add " << entry[i].full_virtual_address << " type " << (int)entry[i].type <<  " is_translation " << (int) entry[i].is_translation << " Instrcution " << (int)entry[i].instruction << " translation level " << (int) entry[i].translation_level << " scheduled " << (int)entry[i].scheduled << endl << " returned " << (int)entry[i].returned << endl; 
                         }
 		cout << "********************************" << endl;
 

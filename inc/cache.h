@@ -16,7 +16,7 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 #define IS_L2C  5
 #define IS_LLC  6
 #define IS_PTW  7
-#define IS_SCRATCHPAD 12
+#define IS_SCRATCHPAD 15
 #ifdef PUSH_DTLB_PB
 #define IS_DTLB_PB 9
 #endif
@@ -26,6 +26,8 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 #define IS_PSCL4  9
 #define IS_PSCL3  10
 #define IS_PSCL2  11
+#define IS_PSCL2_VB  12 //victim buffer
+#define IS_PSCL2_PB  13
 
 // QUEUE TYPE
 #define IS_RQ 0
@@ -283,28 +285,34 @@ class CACHE : public MEMORY {
          update_fill_cycle(),
 	 update_fill_cycle_scratchpad(uint8_t mshr_type), //@Nilesh: for scratchpad
          llc_initialize_replacement(),
+         PSCL2_initialize_replacement(),
          update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
+         PSCL2_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          lru_update(uint32_t set, uint32_t way),
          fill_cache(uint32_t set, uint32_t way, PACKET *packet),
          replacement_final_stats(),
          llc_replacement_final_stats(),
+         PSCL2_replacement_final_stats(),
          //prefetcher_initialize(),
          l1d_prefetcher_initialize(),
          l2c_prefetcher_initialize(),
          llc_prefetcher_initialize(),
          itlb_prefetcher_initialize(),
          dtlb_prefetcher_initialize(), 
+         PSCL2_prefetcher_initialize(), 
          stlb_prefetcher_initialize(),
          prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type),
          l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type), //, uint64_t prefetch_id),
          itlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
          dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),
+         PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),
          stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
          prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr),
          l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          itlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          dtlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
+         PSCL2_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          stlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          //prefetcher_final_stats(),
          l1d_prefetcher_final_stats(),
@@ -312,6 +320,7 @@ class CACHE : public MEMORY {
          llc_prefetcher_final_stats(),
          itlb_prefetcher_final_stats(),
          dtlb_prefetcher_final_stats(),
+         PSCL2_prefetcher_final_stats(),
          stlb_prefetcher_final_stats();
 
 	int add_mshr_data_queue_scratchpad(PACKET_QUEUE *queue, PACKET *packet);
@@ -325,6 +334,7 @@ class CACHE : public MEMORY {
              get_way(uint64_t address, uint32_t set),
              find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
+             PSCL2_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type);
 };
 
