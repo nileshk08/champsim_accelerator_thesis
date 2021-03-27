@@ -381,6 +381,7 @@ void finish_warmup()
         ooo_cpu[i].L1I.LATENCY  = L1I_LATENCY;
         ooo_cpu[i].L1D.LATENCY  = L1D_LATENCY;
         ooo_cpu[i].L2C.LATENCY  = L2C_LATENCY;
+//        ooo_cpu[i].PTW.LATENCY  = MMU_CACHE_LATENCY;
     }
     uncore.LLC.LATENCY = LLC_LATENCY;
 }
@@ -703,6 +704,19 @@ void swap_context(uint8_t swap_cpu_0, uint8_t swap_cpu_1)
 
 }
 
+void check_prefetch_status_ptl2(){
+	for(int i=1;i<NUM_CPUS; i++){
+		CACHE *cache = &ooo_cpu[ACCELERATOR_START].PTW.PSCL2;
+		cache->is_prefetch[i] = false;
+		if((cache->sim_hit[i][TRANSLATION]*100 / cache->sim_access[i][TRANSLATION]) >= PREFETCH_THRESHOLD){
+			cache->is_prefetch[i] = true;	
+		}    
+		else
+			cache->is_prefetch[i] = false;
+		cout << "cpu " << i << " sim hit " << cache->sim_hit[i][TRANSLATION] << " sim access " << cache->sim_access[i][TRANSLATION] << 
+			" THreshold " << PREFETCH_THRESHOLD << " is prefech " << cache->is_prefetch << endl;
+	}
+}
 int main(int argc, char** argv)
 {
 	
@@ -1008,6 +1022,7 @@ int main(int argc, char** argv)
 	ooo_cpu[i].PTW.PSCL2_VB.cache_type = IS_PSCL2_VB;
 	ooo_cpu[i].PTW.PSCL2_PB.cache_type = IS_PSCL2_PB;
 	ooo_cpu[i].PTW.PSCL2.PSCL2_initialize_replacement();
+	ooo_cpu[i].PTW.PSCL2.PSCL2_prefetcher_initialize();
 
 	if(i >= ACCELERATOR_START){
 		ooo_cpu[i].SCRATCHPAD.cpu = i;
@@ -1085,6 +1100,10 @@ int main(int argc, char** argv)
     start_time = time(NULL);
     uint8_t run_simulation = 1;
     int cs_index = 0;
+    
+    bool prefetch_check[NUM_CPUS];
+    for(int i=0;i<NUM_CPUS;i++)
+	    prefetch_check[i] = true;
     while (run_simulation) {
 
         uint64_t elapsed_second = (uint64_t)(time(NULL) - start_time),
@@ -1246,6 +1265,10 @@ int main(int argc, char** argv)
             */
             
             // simulation complete
+	 /*   if(prefetch_check[i]  && (ooo_cpu[i].num_retired >=  warmup_instructions + PREFETCH_CHECK_INSTR)){
+		    prefetch_check[i] = false;
+		    check_prefetch_status_ptl2();	
+	    }*/
           
 	    if(((all_warmup_complete > NUM_CPUS) && (simulation_complete[i] == 0) && (ooo_cpu[i].num_retired >= (ooo_cpu[i].begin_sim_instr + ooo_cpu[i].simulation_instructions)))) {
          //    if(simulation_complete[i] == 1){	/*@Vasudha STOP simulation once trace file ends*/
@@ -1283,8 +1306,8 @@ int main(int argc, char** argv)
         	record_roi_stats(i, &ooo_cpu[i].PTW.PSCL5);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
-		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
+		record_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2);
+		record_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB);
 
                 all_simulation_complete++;
             }
@@ -1307,11 +1330,24 @@ int main(int argc, char** argv)
              elapsed_hour = elapsed_minute / 60;
     elapsed_minute -= elapsed_hour*60;
     elapsed_second -= (elapsed_hour*3600 + elapsed_minute*60);
-//    cout << "Average reuse distance " <<setw(10) << ooo_cpu[0].PTW.total_reuse_distance * 1.0 / ooo_cpu[0].DTLB.number_of_reuse_distance  <<setw(10) << ":"<< setw(10) << ooo_cpu[0].DTLB.total_reuse_distance <<setw(10) << " number of reuse distance " << setw(10) << ooo_cpu[0].DTLB.number_of_reuse_distance << endl;
-    for (auto j = ooo_cpu[0].PTW.dist_count.begin(); j !=  ooo_cpu[0].PTW.dist_count.end(); j++)
+ //   cout << "Average reuse distance " <<setw(10) << ooo_cpu[0].PTW.total_reuse_distance * 1.0 / ooo_cpu[0].DTLB.number_of_reuse_distance  <<setw(10) << ":"<< setw(10) << ooo_cpu[0].DTLB.total_reuse_distance <<setw(10) << " number of reuse distance " << setw(10) << ooo_cpu[0].DTLB.number_of_reuse_distance << endl;
+	cout << endl;
+/*    for (auto j = ooo_cpu[0].DTLB.dist_count.begin(); j !=  ooo_cpu[0].DTLB.dist_count.end(); j++)
             cout << j->first << "      " << j->second << endl;
-
- //   cout << endl << "ChampSim completed all CPUs" << endl;
+*/
+    cout << endl << "ChampSim completed all CPUs" << endl;
+    cout << "Prefetcher status for accelerators " << endl;
+    for(int i=0;i<NUM_CPUS;i++){
+    	cout << "Accelerator " << i << "  status " << ooo_cpu[ACCELERATOR_START].PTW.PSCL2.is_prefetch[i]  << endl;
+    }
+    for(int i=0;i<NUM_CPUS;i++){
+	    cout << "Eviction " << i ;
+	    for(int j=0;j<NUM_CPUS;j++){
+		cout << " " << ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB.eviction_matrix[i][j];
+	    }
+	    cout << endl;
+    }
+    cout << endl;
     if (NUM_CPUS >= 1) {
         cout << endl << "Total Simulation Statistics (not including warmup)" << endl;
 	cout << ooo_cpu[ACCELERATOR_START].PTW.rq_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.rq_count_cycle << " ad " << ooo_cpu[ACCELERATOR_START].PTW.mshr_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.mshr_count_cycle << " PREF MSHR " <<  ooo_cpu[ACCELERATOR_START].PTW.prefetch_mshr_entries << endl;
@@ -1345,9 +1381,9 @@ int main(int argc, char** argv)
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL5);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL3);
-		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		    print_sim_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
 	    }
+	    print_sim_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2);
+	    print_sim_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB);
 
 	    if(i< ACCELERATOR_START){
 		    ooo_cpu[i].L1D.l1d_prefetcher_final_stats();
@@ -1392,9 +1428,9 @@ int main(int argc, char** argv)
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL5);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
-		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2);
-		print_roi_stats(i, &ooo_cpu[i].PTW.PSCL2_PB);
 	}
+	print_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2);
+	print_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB);
 #endif
 #ifdef PUSH_DTLB_PB
 		    print_sim_stats(i, &ooo_cpu[i].DTLB_PB);

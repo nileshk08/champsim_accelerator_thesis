@@ -204,8 +204,11 @@ void CACHE::handle_fill()
                 MSHR.queuePrint();
         }
 	)
- 	//cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
 	uint32_t fill_cpu = (MSHR.next_fill_index == MSHR_SIZE) ? NUM_CPUS : MSHR.entry[MSHR.next_fill_index].cpu;
+	/*if(cache_type == IS_PSCL2){
+ 	cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
+	cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
+	}*/
 	if(ITLB_FLAG)
 		cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
 	if (fill_cpu == NUM_CPUS)
@@ -230,7 +233,10 @@ void CACHE::handle_fill()
 		}
 		else
 			way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
-
+		if(cache_type == IS_PSCL2_PB)
+			if(block[set][way].valid){
+				eviction_matrix[MSHR.entry[mshr_index].cpu][block[set][way].cpu]++;
+			}
 #ifdef LLC_BYPASS
 		if ((cache_type == IS_LLC) && (way == LLC_WAY)) { // this is a bypass that does not fill the LLC
 
@@ -342,8 +348,8 @@ void CACHE::handle_fill()
 						block[set][way].address<<LOG2_BLOCK_SIZE, MSHR.entry[mshr_index].pf_metadata);
 				cpu = 0;
 			}
-			if (cache_type == IS_PSCL2){
-				PSCL2_prefetcher_operate(MSHR.entry[mshr_index].address << LOG2_PAGE_SIZE, MSHR.entry[mshr_index].ip, 1, MSHR.entry[mshr_index].type, MSHR.entry[mshr_index].instr_id, MSHR.entry[mshr_index].instruction, MSHR.entry[mshr_index].asid[0]);
+			if (cache_type == IS_PSCL2 && is_prefetch[MSHR.entry[mshr_index].cpu]){
+				PSCL2_prefetcher_operate(MSHR.entry[mshr_index].address << LOG2_PAGE_SIZE, MSHR.entry[mshr_index].ip, 1, MSHR.entry[mshr_index].type, MSHR.entry[mshr_index].instr_id, MSHR.entry[mshr_index].instruction, MSHR.entry[mshr_index].asid[0], MSHR.entry[mshr_index].cpu);
 			}
 //						dtlb_prefetcher_operate(RQ.entry[index].address<<LOG2_PAGE_SIZE, RQ.entry[index].ip, 1, RQ.entry[index].type, RQ.entry[index].instr_id, RQ.entry[index].instruction,RQ.entry[index].asid[0] );
 
@@ -1643,6 +1649,25 @@ void CACHE::handle_read()
 						cout << " full_addr: " << RQ.entry[index].full_addr << dec;
 						cout << " cycle: " << RQ.entry[index].event_cycle << endl; });
 
+				if(cache_type == IS_DTLB){
+					if(add_loc.count(RQ.entry[index].address-1)){
+						int count = 0;
+						uint64_t  location = add_loc[RQ.entry[index].address-1];
+						for(auto itr= loc_add.find(location); itr != loc_add.end(); itr++){
+							count++;
+						}
+						dist_count[count]++;
+						//     total_reuse_distance += total_address.size();
+						// number_of_reuse_distance++;
+						// total_address.clear();
+
+					}
+					else
+						dist_count[UINT64_MAX]++;
+					add_loc[RQ.entry[index].address] = current_core_cycle[cpu];
+					loc_add[current_core_cycle[cpu]] = RQ.entry[index].address;
+
+				}
 
 
 				// check mshr
@@ -3305,6 +3330,46 @@ int CACHE::prefetch_line(uint64_t ip, uint64_t base_addr, uint64_t pf_addr, int 
 	return 0;
 }
 
+int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level, uint32_t prefetch_metadata, uint64_t prefetch_id, uint8_t instruction,uint8_t packet_cpu)
+{
+	pf_requested++;
+	DP ( if (warmup_complete[cpu]) {cout << "entered prefetch_translation, occupancy = " << PQ.occupancy << "SIZE=" << PQ.SIZE << endl; });
+	if (ooo_cpu[ACCELERATOR_START].PTW.PQ.occupancy < ooo_cpu[ACCELERATOR_START].PTW.PQ.SIZE) 
+	{
+		DP ( if (warmup_complete[cpu]) {cout << "packet entered in PQ" << endl; });
+		PACKET pf_packet;
+		pf_packet.fill_level = pf_fill_level;
+		pf_packet.pf_origin_level = fill_level;
+		pf_packet.pf_metadata = prefetch_metadata;
+		pf_packet.cpu = packet_cpu;
+		pf_packet.instruction = instruction;
+		//pf_packet.data_index = LQ.entry[lq_index].data_index;
+		//pf_packet.lq_index = lq_index;
+		pf_packet.address = pf_addr >> LOG2_PAGE_SIZE;
+		pf_packet.full_addr = pf_addr;
+		pf_packet.full_virtual_address = pf_addr;
+		//pf_packet.instr_id = LQ.entry[lq_index].instr_id;
+		//pf_packet.rob_index = LQ.entry[lq_index].rob_index;
+		pf_packet.ip = ip;
+		pf_packet.prefetch_id = prefetch_id;
+		pf_packet.type = PREFETCH;
+		pf_packet.event_cycle = current_core_cycle[cpu];
+
+		// give a dummy 0 as the IP of a prefetch
+		if(cache_type == IS_PSCL2){
+//			pf_packet.translation_level = 1; 
+			ooo_cpu[ACCELERATOR_START].PTW.add_pq(&pf_packet);
+		}
+		else
+			add_pq(&pf_packet);
+		DP ( if (warmup_complete[pf_packet.cpu]) {cout << "returned from add_pq" << endl; });
+		pf_issued++;
+
+		return 1;
+	}
+
+	return 0;
+}
 int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level, uint32_t prefetch_metadata, uint64_t prefetch_id, uint8_t instruction)
 {
 	pf_requested++;

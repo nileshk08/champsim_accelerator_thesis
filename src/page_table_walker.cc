@@ -183,10 +183,10 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 			assert((RQ.entry[index].full_addr >> 32) != 0xf000000f); //Page table is stored at this address
 			assert(RQ.entry[index].full_virtual_address != 0);
 
-			uint64_t address_pscl5 = check_hit(PSCL5,get_index(RQ.entry[index].full_addr,IS_PSCL5));
-			uint64_t address_pscl4 = check_hit(PSCL4,get_index(RQ.entry[index].full_addr,IS_PSCL4));
-			uint64_t address_pscl3 = check_hit(PSCL3,get_index(RQ.entry[index].full_addr,IS_PSCL3));
-			uint64_t address_pscl2 = check_hit(PSCL2,get_index(RQ.entry[index].full_addr,IS_PSCL2));
+			uint64_t address_pscl5 = check_hit(PSCL5,get_index(RQ.entry[index].full_addr,IS_PSCL5),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
+			uint64_t address_pscl4 = check_hit(PSCL4,get_index(RQ.entry[index].full_addr,IS_PSCL4),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
+			uint64_t address_pscl3 = check_hit(PSCL3,get_index(RQ.entry[index].full_addr,IS_PSCL3),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
+			uint64_t address_pscl2 = check_hit(PSCL2,get_index(RQ.entry[index].full_addr,IS_PSCL2),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
 
 
 			PACKET packet = RQ.entry[index];
@@ -339,11 +339,10 @@ void PAGE_TABLE_WALKER::handle_PQ(){
                          assert((PQ.entry[index].full_addr >> 32) != 0xf000000f); //Page table is stored at this address
                          assert(PQ.entry[index].full_virtual_address != 0);
  			//@Nilesh: Commented for PTL2 prefetching
-                        /* uint64_t address_pscl5 = check_hit(PSCL5,get_index(PQ.entry[index].full_addr,IS_PSCL5));
-                         uint64_t address_pscl4 = check_hit(PSCL4,get_index(PQ.entry[index].full_addr,IS_PSCL4));
-                         uint64_t address_pscl3 = check_hit(PSCL3,get_index(PQ.entry[index].full_addr,IS_PSCL3));
-			*/
-			 uint64_t address_pscl2 = check_hit(PSCL2,get_index(PQ.entry[index].full_addr,IS_PSCL2));
+                         uint64_t address_pscl5 = check_hit(PSCL5,get_index(PQ.entry[index].full_addr,IS_PSCL5),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
+                         uint64_t address_pscl4 = check_hit(PSCL4,get_index(PQ.entry[index].full_addr,IS_PSCL4),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
+                         uint64_t address_pscl3 = check_hit(PSCL3,get_index(PQ.entry[index].full_addr,IS_PSCL3),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
+			 uint64_t address_pscl2 = check_hit(PSCL2,get_index(PQ.entry[index].full_addr,IS_PSCL2),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
 
                          PACKET packet = PQ.entry[index];
              		 packet.fill_level = FILL_L1; //@Vishal: This packet will be sent from L2 to PTW, TODO: check if this is done or not
@@ -359,7 +358,7 @@ void PAGE_TABLE_WALKER::handle_PQ(){
 	
 	                 if(address_pscl2 != UINT64_MAX)
 	                 {
-				 cout << " pscl2 in handle PQ  " << address_pscl2 << endl; 
+				// cout << " pscl2 in handle PQ  " << address_pscl2 << endl; 
         	                  next_address = address_pscl2 << LOG2_PAGE_SIZE | (get_offset(PQ.entry[index].full_addr,IS_PTL1) << 3);
                 		  packet.translation_level = 1;
                          }
@@ -890,7 +889,7 @@ void PAGE_TABLE_WALKER::fill_mmu_cache(CACHE &cache, uint64_t next_level_base_ad
 	cache.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
 
 	cache.MSHR.next_fill_index = 0;
-	cache.MSHR.next_fill_cycle = current_core_cycle[cpu];
+	cache.MSHR.next_fill_cycle = current_core_cycle[packet->cpu];
 /*	if(cache_type == IS_PSCL2 || cache_type == IS_PSCL2_PB){
 		cout << (int)cache_type << " address " << cache.MSHR.entry[0].address << endl;
 	
@@ -924,7 +923,7 @@ uint64_t PAGE_TABLE_WALKER::get_index(uint64_t address, uint8_t cache_type)
 	return (address >> shift); 
 }
 
-uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address)
+uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address,uint8_t packet_cpu, PACKET *packet,bool status)
 {
 
 	uint32_t set = cache.get_set(address);
@@ -947,62 +946,67 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address)
 	    }
 	    add_loc[address] = current_core_cycle[cpu];
 	    loc_add[current_core_cycle[cpu]] = address;*/
-    
+  /*  if(cache.cache_type == IS_PSCL2){
+	    add_loc[address] = current_core_cycle[cpu];
+	    loc_add[current_core_cycle[cpu]] = address;
+    }*/
     for (uint32_t way=0; way<cache.NUM_WAY; way++) {
-        if (cache.block[set][way].valid && (cache.block[set][way].tag == address)) {
+        if (cache.block[set][way].valid && (cache.block[set][way].cpu == packet_cpu) && (cache.block[set][way].tag == address)) {
 	    
 	    // COLLECT STATS
-            cache.sim_hit[cpu][TRANSLATION]++;
-            cache.sim_access[cpu][TRANSLATION]++;
-	    if(cache.cache_type == IS_PSCL2){
-		    DTLBPRINT(if( warmup_complete[cpu] ){
-				    cout << "Hit " <<current_core_cycle[cpu]<< " "   <<setw(10) << (address)  << endl;
-				    });
-	    }
-	    if(cache.cache_type == IS_PSCL2){
-		  //  cout << "calling for hit \n"; 
+	    if(cache.cache_type == IS_PSCL2 ){
+		    cache.sim_hit[packet_cpu][TRANSLATION]++;
+		    cache.sim_access[packet_cpu][TRANSLATION]++;
 		    cache.PSCL2_update_replacement_state(cpu, set, way, cache.block[set][way].full_addr,0 , 0, TRANSLATION, 1);
+	    }
+	    if(cache.cache_type == IS_PSCL2_PB){
+		    cache.sim_hit[packet_cpu][TRANSLATION]++;
+		    cache.sim_access[packet_cpu][TRANSLATION]++;
+		    cache.block[set][way].valid = 0;
+		    fill_mmu_cache(PSCL2, cache.block[set][way].data , packet, IS_PSCL2);
+	    }
+	    else {
+		    cache.sim_hit[cpu][TRANSLATION]++;
+		    cache.sim_access[cpu][TRANSLATION]++;
 	    }
 	    return cache.block[set][way].data;
         }
     }
-    cache.sim_miss[cpu][TRANSLATION]++;
-    cache.sim_access[cpu][TRANSLATION]++;
+  /*  if(cache.cache_type == IS_PSCL2){
+	    if(add_loc.count(address-5)){
+		    int count = 0;
+		    uint64_t  location = add_loc[address-5];
+		    for(auto itr= loc_add.find(location); itr != loc_add.end(); itr++){
+			    count++;
+		    }
+		    dist_count[count]++;
+		    //     total_reuse_distance += total_address.size();
+		   // number_of_reuse_distance++;
+		   // total_address.clear();
+
+	    }
+	    else
+		    dist_count[UINT64_MAX]++;
+	    add_loc[address] = current_core_cycle[cpu];
+	    loc_add[current_core_cycle[cpu]] = address;
+    }*/
+    if(cache.cache_type == IS_PSCL2 || cache.cache_type == IS_PSCL2_PB){
+	    //cout << " miss packet_cpu " << (int)packet_cpu << endl;
+	    cache.sim_miss[packet_cpu][TRANSLATION]++;
+	    cache.sim_access[packet_cpu][TRANSLATION]++;
+    }
+    else{
+	    cache.sim_miss[cpu][TRANSLATION]++;
+	    cache.sim_access[cpu][TRANSLATION]++;
+    }
 /*    if(warmup_complete[cpu])
 	    return 5;			// added for ideal ptl2
 */
-    if(cache.cache_type == IS_PSCL2){
-	    return check_hit(PSCL2_PB,address);
+/*    if(cache.cache_type == IS_PSCL2_PB && status)
+	   PSCL2.PSCL2_prefetcher_operate(get_index(packet->full_virtual_address,IS_PSCL2) << LOG2_PAGE_SIZE, packet->ip, 1, packet->type, packet->instr_id, packet->instruction, packet->asid[0]);
+*/    if(cache.cache_type == IS_PSCL2 && cache.is_prefetch[packet_cpu]){
+	    return check_hit(PSCL2_PB,address,packet_cpu,packet,status);
 	    //check for prefetch buffer at PSCL2
-/*	    for (uint32_t way=0; way<PSCL2_PB.NUM_WAY; way++) {
-		    if (PSCL2_PB.block[1][way].valid && (PSCL2_PB.block[1][way].tag == address)) {
-			    
-
-			    // COLLECT STATS
-			    PSCL2_PB.sim_hit[cpu][TRANSLATION]++;
-			    PSCL2_PB.sim_access[cpu][TRANSLATION]++;
-			    PSCL2_PB.block[set][way].valid = 0;
-
-			    PSCL2.MSHR.entry[0].fill_level = 0;
-			    PSCL2.MSHR.entry[0].cpu = PSCL2_PB.block[1][way].cpu;
-			    PSCL2.MSHR.entry[0].address =  PSCL2_PB.block[1][way].address;
-			    PSCL2.MSHR.entry[0].full_addr = PSCL2_PB.block[1][way].full_addr;
-			    PSCL2.MSHR.entry[0].data = PSCL2_PB.block[1][way].data;
-			    PSCL2.MSHR.entry[0].instr_id = PSCL2_PB.block[1][way].instr_id;
-			    PSCL2.MSHR.entry[0].ip = 0;
-			    PSCL2.MSHR.entry[0].type = TRANSLATION;
-			    PSCL2.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
-			    PSCL2.MSHR.next_fill_index = 0;
-			    PSCL2.MSHR.next_fill_cycle = current_core_cycle[cpu];
-			    PSCL2.MSHR.occupancy = 1;
-			    PSCL2.handle_fill();
-
-			    return PSCL2_PB.block[1][way].data;
-		    }
-	    }
-	    PSCL2_PB.sim_miss[cpu][TRANSLATION]++;
-	    PSCL2_PB.sim_access[cpu][TRANSLATION]++;
-*/
     }
     return UINT64_MAX;
 }
@@ -1033,6 +1037,7 @@ uint64_t PAGE_TABLE_WALKER::get_offset(uint64_t full_virtual_addr, uint8_t pt_le
 int  PAGE_TABLE_WALKER::add_rq(PACKET *packet)
 {
 	// check for duplicates in the read queue
+//   cout << "latency in add rq " << LATENCY << endl;
    int index = -1;
    if(warmup_complete[cpu])
 	   packet->ptw_start_cycle = current_core_cycle[cpu];
@@ -1109,7 +1114,7 @@ int PAGE_TABLE_WALKER::add_pq(PACKET *packet)
 	int index = PQ.check_queue(packet);
 	if(index != -1)
 		return index;
-	index = check_hit(PSCL2,get_index(packet->full_addr,IS_PSCL2));
+	index = check_hit(PSCL2,get_index(packet->full_addr,IS_PSCL2),packet->cpu,packet, false);
 	if(index != UINT64_MAX)
 		return 1;
 	assert(index == -1);
