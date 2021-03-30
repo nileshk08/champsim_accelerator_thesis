@@ -2,16 +2,16 @@
 #include "page_table_walker.h"
 
 #define maxRRPV 3
-uint32_t rrpv[DTLB_SET][DTLB_WAY];
-int r = 1;
+uint32_t drrpv[DTLB_SET][DTLB_WAY];
+int dr = 1;
 // initialize replacement state
 void CACHE::dtlb_initialize_replacement()
 {
-    cout << " dtlb Initialize SRRIP state with " << maxRRPV - r << endl;
+    cout << " dtlb Initialize SRRIP state with " << maxRRPV - dr << endl;
 
     for (int i=0; i<DTLB_SET; i++) {
         for (int j=0; j<DTLB_WAY; j++) {
-            rrpv[i][j] = maxRRPV;
+            drrpv[i][j] = maxRRPV;
         }
     }
 }
@@ -24,13 +24,13 @@ uint32_t CACHE::dtlb_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, 
     while (1)
     {
         for (int i=0; i<DTLB_WAY; i++)
-            if (rrpv[set][i] == maxRRPV){
+            if (drrpv[set][i] == maxRRPV){
 //		cout << "srrip  instru id " << instr_id <<  " set " << set << " way " << i<< endl;
                 return i;
 	}
 
         for (int i=0; i<DTLB_WAY; i++)
-            rrpv[set][i]++;
+            drrpv[set][i]++;
     }
 
     // WE SHOULD NOT REACH HERE
@@ -69,9 +69,9 @@ void CACHE::dtlb_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t w
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
     
     if (hit)
-        rrpv[set][way] = 0;
+        drrpv[set][way] = 0;
     else
-        rrpv[set][way] = maxRRPV-r;
+        drrpv[set][way] = maxRRPV-dr;
 }
 
 // use this function to print out your own stats at the end of simulation
