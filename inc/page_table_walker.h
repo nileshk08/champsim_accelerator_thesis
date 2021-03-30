@@ -2,6 +2,9 @@
 #include <unordered_map>
 #include<unordered_set>
 
+#define PREFETCH_THRESHOLD 4 
+#define PREFETCH_CHECK_INSTR 500000
+
 #define PSCL5_SET 1
 #define PSCL5_WAY 2
 
@@ -11,8 +14,8 @@
 #define PSCL3_SET 2
 #define PSCL3_WAY 4
 
-#define PSCL2_SET 4
-#define PSCL2_WAY 8
+#define PSCL2_SET 1
+#define PSCL2_WAY 32
 
 #define PSCL2_VB_SET 4
 #define PSCL2_VB_WAY 8
@@ -71,12 +74,13 @@ class PAGE_TABLE_WALKER : public MEMORY {
     uint32_t LATENCY; //Latency for accessing MMU cache
 
     uint64_t rq_full, rq_entries, mshr_entries, pq_entries,prefetch_mshr_entries, prefetch_mshr_count_cycle,rq_count_cycle,mshr_count_cycle,pq_count_cycle;
-    uint64_t total_miss_latency, PTW_latency,PTW_rq;
+    uint64_t total_miss_latency, PTW_latency,PTW_rq, translation_number[7];
 
     uint64_t next_translation_virtual_address = 0xf000000f00000000; //Stores the virtual address from which translation pages will reside
 
 	queue <uint64_t > page_queue;
-	map <uint64_t, uint64_t> page_table, inverse_table, recent_page;
+	map <uint64_t, uint64_t> page_table, inverse_table, recent_page,diff_num;
+	unordered_map <uint64_t, uint64_t> addr_cycle;
 	
 	uint64_t previous_ppage, num_adjacent_page, allocated_pages;
 	unordered_map<uint64_t,uint64_t> add_loc;
@@ -91,12 +95,17 @@ class PAGE_TABLE_WALKER : public MEMORY {
 		 PREFETCH_MSHR{NAME + "_PREFETCH_MSHR", PTW_PREFETCH_MSHR_SIZE}, //PREFETCH MSHR @NILESH: multiple PTW for prefetching
 		 PQ{NAME+ "_PQ", PTW_PQ_SIZE};	      // PQ
 
+
     CACHE PSCL5{"PSCL5", PSCL5_SET, PSCL5_WAY, PSCL5_SET*PSCL5_WAY, 0, 0, 0, 1}, //Translation from L5->L4
           PSCL4{"PSCL4", PSCL4_SET, PSCL4_WAY, PSCL4_SET*PSCL4_WAY, 0, 0, 0, 1}, //Translation from L5->L3
           PSCL3{"PSCL3", PSCL3_SET, PSCL3_WAY, PSCL3_SET*PSCL3_WAY, 0, 0, 0, 1}, //Translation from L5->L2
           PSCL2{"PSCL2", PSCL2_SET, PSCL2_WAY, PSCL2_SET*PSCL2_WAY, 0, 0, 0, 1}, //Translation from L5->L1
           PSCL2_VB{"PSCL2_VB", PSCL2_VB_SET, PSCL2_VB_WAY, PSCL2_VB_SET*PSCL2_VB_WAY, 0, 0, 0, 1}, //Victim Buffer for PTL2
           PSCL2_PB{"PSCL2_PB", PSCL2_PB_SET, PSCL2_PB_WAY, PSCL2_PB_SET*PSCL2_PB_WAY, 0, 0, 0, 1}; //Prefetch Buffer Victim Buffer for PTL2
+
+    vector<CACHE> PSCL2A;
+//    CACHE* PSCL2A = new CACHE[8];
+
 
     PAGE_TABLE_PAGE *L5; //CR3 register points to the base of this page.
     uint64_t CR3_addr; //This address will not have page offset bits.
@@ -128,6 +137,13 @@ class PAGE_TABLE_WALKER : public MEMORY {
         PSCL4.fill_level = 0;
         PSCL3.fill_level = 0;
         PSCL2.fill_level = 0;
+
+	for (int i = 0; i < NUM_CPUS; i++) {
+		PSCL2A.push_back(CACHE("PSCL2_"+to_string(i), 1, 32, 32, 0, 0, 0, 1));
+	}
+
+	for(int i=0;i<7;i++)
+		translation_number[i]=0;
     };
 
     // destructor
@@ -157,7 +173,7 @@ class PAGE_TABLE_WALKER : public MEMORY {
              get_size(uint8_t queue_type, uint64_t address);
 
     uint64_t get_index(uint64_t address, uint8_t cache_type),
-             check_hit(CACHE &cache, uint64_t address),
+             check_hit(CACHE &cache, uint64_t address, uint8_t packet_cpu, PACKET *packet, bool status),
              get_offset(uint64_t address, uint8_t pt_level);
              
     void handle_page_fault(PAGE_TABLE_PAGE* page, PACKET *packet, uint8_t pt_level);

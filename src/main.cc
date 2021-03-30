@@ -987,6 +987,7 @@ int main(int argc, char** argv)
 	else
 		ooo_cpu[i].DTLB.lower_level = &ooo_cpu[i].STLB;
         ooo_cpu[i].DTLB.dtlb_prefetcher_initialize();
+	ooo_cpu[i].DTLB.dtlb_initialize_replacement();
 
 	#ifdef PUSH_DTLB_PB
 	ooo_cpu[i].DTLB_PB.cpu = i;
@@ -1019,6 +1020,10 @@ int main(int argc, char** argv)
 	ooo_cpu[i].PTW.PSCL4.cache_type = IS_PSCL4;
 	ooo_cpu[i].PTW.PSCL3.cache_type = IS_PSCL3;
 	ooo_cpu[i].PTW.PSCL2.cache_type = IS_PSCL2;
+	for(int j=0;j<NUM_CPUS;j++){
+		ooo_cpu[ACCELERATOR_START].PTW.PSCL2A[j].cache_type = IS_PSCL2;
+		ooo_cpu[ACCELERATOR_START].PTW.PSCL2A[j].NUM_WAY = PSCL2_WAY / NUM_CPUS;
+	}
 	ooo_cpu[i].PTW.PSCL2_VB.cache_type = IS_PSCL2_VB;
 	ooo_cpu[i].PTW.PSCL2_PB.cache_type = IS_PSCL2_PB;
 	ooo_cpu[i].PTW.PSCL2.PSCL2_initialize_replacement();
@@ -1347,7 +1352,15 @@ int main(int argc, char** argv)
 	    }
 	    cout << endl;
     }
+    cout << "\n Translation numbers ";
+    for(int i=0;i<7;i++){
+    	cout << ooo_cpu[ACCELERATOR_START].PTW.translation_number[i] << " ";
+    }
     cout << endl;
+    cout << endl;
+/*    for(int i=0;i<NUM_CPUS;i++){
+	    print_sim_stats(ACCELERATOR_START, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2A[i]);
+    }*/
     if (NUM_CPUS >= 1) {
         cout << endl << "Total Simulation Statistics (not including warmup)" << endl;
 	cout << ooo_cpu[ACCELERATOR_START].PTW.rq_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.rq_count_cycle << " ad " << ooo_cpu[ACCELERATOR_START].PTW.mshr_entries << " " << ooo_cpu[ACCELERATOR_START].PTW.mshr_count_cycle << " PREF MSHR " <<  ooo_cpu[ACCELERATOR_START].PTW.prefetch_mshr_entries << endl;

@@ -304,11 +304,11 @@ class PACKET_QUEUE {
         //entry = new PACKET[SIZE]; 
     };
 
-    // destructor
+/*    // destructor
     ~PACKET_QUEUE() {
         delete[] entry;
     };
-
+*/
     // functions
     int check_queue(PACKET* packet);
     void add_queue(PACKET* packet),

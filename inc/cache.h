@@ -3,6 +3,7 @@
 
 #include "memory_class.h"
 #include<unordered_set>
+#include<unordered_map>
 
 // PAGE
 extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
@@ -120,15 +121,18 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 class CACHE : public MEMORY {
 	public:
     uint32_t cpu;
+    bool is_prefetch[NUM_CPUS];
     const string NAME;
-    const uint32_t NUM_SET, NUM_WAY, NUM_LINE, WQ_SIZE, RQ_SIZE, PQ_SIZE, MSHR_SIZE;
-    uint32_t LATENCY;
+    const uint32_t NUM_SET,  NUM_LINE, WQ_SIZE, RQ_SIZE, PQ_SIZE, MSHR_SIZE;
+    uint32_t LATENCY, NUM_WAY;
     unordered_set<uint64_t> coldMiss_DTLB, coldMiss_STLB;
     BLOCK **block;
     int fill_level;
     uint32_t MAX_READ, MAX_FILL;
     uint32_t reads_available_this_cycle, cold_miss_warmup;
     uint8_t cache_type;
+
+    uint64_t eviction_matrix[NUM_CPUS][NUM_CPUS];
 
     // prefetch stats
     uint64_t pf_requested,
@@ -170,6 +174,10 @@ class CACHE : public MEMORY {
 	     stlb_merged;
 
     uint64_t total_miss_latency, sim_latency[NUM_CPUS], total_lat_req[NUM_CPUS], check_stlb_counter[NUM_CPUS];
+
+    unordered_map<uint64_t,uint64_t> add_loc;
+    unordered_set<uint64_t> coldMiss,total_address;
+    map<uint64_t,uint64_t> loc_add, dist_count;
     
     // constructor
     CACHE(string v1, uint32_t v2, int v3, uint32_t v4, uint32_t v5, uint32_t v6, uint32_t v7, uint32_t v8) 
@@ -194,7 +202,10 @@ class CACHE : public MEMORY {
 	    sim_latency[i] = 0;
 	    total_lat_req[i] = 0;
 	    check_stlb_counter[i] = 0;
+	    is_prefetch[i] = true;
 
+	    for (uint32_t j=0; j<NUM_CPUS; j++) 
+		    eviction_matrix[i][j]=0;
             for (uint32_t j=0; j<NUM_TYPES; j++) {
                 sim_access[i][j] = 0;
                 sim_hit[i][j] = 0;
@@ -269,6 +280,7 @@ class CACHE : public MEMORY {
          prefetch_line(uint64_t ip, uint64_t base_addr, uint64_t pf_addr, int prefetch_fill_level, uint32_t prefetch_metadata)/* Neelu: commenting, uint64_t prefetch_id)*/,
          kpc_prefetch_line(uint64_t base_addr, uint64_t pf_addr, int prefetch_fill_level, int delta, int depth, int signature, int confidence, uint32_t prefetch_metadata),
          prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level, uint32_t prefetch_metadata, uint64_t prefetch_id, uint8_t instruction),
+         prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level, uint32_t prefetch_metadata, uint64_t prefetch_id, uint8_t instruction,uint8_t packet_cpu),
          check_nonfifo_queue(PACKET_QUEUE *queue, PACKET *packet, bool packet_direction); //@Vishal: Updated from check_mshr
 
     void handle_fill(),
@@ -285,14 +297,17 @@ class CACHE : public MEMORY {
          update_fill_cycle(),
 	 update_fill_cycle_scratchpad(uint8_t mshr_type), //@Nilesh: for scratchpad
          llc_initialize_replacement(),
+         dtlb_initialize_replacement(),
          PSCL2_initialize_replacement(),
          update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
+         dtlb_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          PSCL2_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          lru_update(uint32_t set, uint32_t way),
          fill_cache(uint32_t set, uint32_t way, PACKET *packet),
          replacement_final_stats(),
          llc_replacement_final_stats(),
+         dtlb_replacement_final_stats(),
          PSCL2_replacement_final_stats(),
          //prefetcher_initialize(),
          l1d_prefetcher_initialize(),
@@ -306,7 +321,7 @@ class CACHE : public MEMORY {
          l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type), //, uint64_t prefetch_id),
          itlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
          dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),
-         PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),
+         PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid, uint8_t cpu),
          stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
          prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr),
          l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
@@ -334,6 +349,7 @@ class CACHE : public MEMORY {
              get_way(uint64_t address, uint32_t set),
              find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
+             dtlb_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              PSCL2_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type);
 };

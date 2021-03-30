@@ -58,8 +58,10 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 							case 3: fill_mmu_cache(PSCL3, next_level_base_addr, &temp_mshr->entry[index], IS_PSCL3);
 								break;
 							case 2:
+								//cout <<"cpu inside mshr fill " << temp_mshr->entry[index].cpu << endl;
 								if(mshr_type)
 								fill_mmu_cache(PSCL2, next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2);
+//								fill_mmu_cache(PSCL2A[temp_mshr->entry[index].cpu], next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2);
 								else
 								fill_mmu_cache(PSCL2_PB,next_level_base_addr, &temp_mshr->entry[index], IS_PSCL2_PB);
 								break;
@@ -186,7 +188,8 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 			uint64_t address_pscl5 = check_hit(PSCL5,get_index(RQ.entry[index].full_addr,IS_PSCL5),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
 			uint64_t address_pscl4 = check_hit(PSCL4,get_index(RQ.entry[index].full_addr,IS_PSCL4),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
 			uint64_t address_pscl3 = check_hit(PSCL3,get_index(RQ.entry[index].full_addr,IS_PSCL3),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
-			uint64_t address_pscl2 = check_hit(PSCL2,get_index(RQ.entry[index].full_addr,IS_PSCL2),RQ.entry[RQ.head].cpu,&RQ.entry[index],true);
+			uint64_t address_pscl2 = check_hit(PSCL2,get_index(RQ.entry[index].full_addr,IS_PSCL2),RQ.entry[index].cpu,&RQ.entry[index],true);
+//			uint64_t address_pscl2 = check_hit(PSCL2A[RQ.entry[index].cpu],get_index(RQ.entry[index].full_addr,IS_PSCL2),RQ.entry[index].cpu,&RQ.entry[index],true);
 
 
 			PACKET packet = RQ.entry[index];
@@ -248,6 +251,8 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 							case 3: fill_mmu_cache(PSCL3, next_level_base_addr, &RQ.entry[index], IS_PSCL3);
 								break;
 							case 2: fill_mmu_cache(PSCL2, next_level_base_addr, &RQ.entry[index], IS_PSCL2);
+								//cout <<"cpu inside RQ " << RQ.entry[index].cpu << endl;
+								//fill_mmu_cache(PSCL2A[RQ.entry[index].cpu], next_level_base_addr, &RQ.entry[index], IS_PSCL2);
 								break;
 						}
 					}
@@ -280,6 +285,8 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 			packet.init_translation_level = packet.translation_level;
 			packet.address = next_address >> LOG2_BLOCK_SIZE;
 			packet.full_addr = next_address;
+
+			translation_number[packet.translation_level]++;
 			
 
 			add_mshr(&packet);
@@ -342,7 +349,8 @@ void PAGE_TABLE_WALKER::handle_PQ(){
                          uint64_t address_pscl5 = check_hit(PSCL5,get_index(PQ.entry[index].full_addr,IS_PSCL5),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
                          uint64_t address_pscl4 = check_hit(PSCL4,get_index(PQ.entry[index].full_addr,IS_PSCL4),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
                          uint64_t address_pscl3 = check_hit(PSCL3,get_index(PQ.entry[index].full_addr,IS_PSCL3),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
-			 uint64_t address_pscl2 = check_hit(PSCL2,get_index(PQ.entry[index].full_addr,IS_PSCL2),PQ.entry[PQ.head].cpu,&PQ.entry[PQ.head],false);
+			 uint64_t address_pscl2 = check_hit(PSCL2,get_index(PQ.entry[index].full_addr,IS_PSCL2),PQ.entry[index].cpu,&PQ.entry[PQ.head],false);
+			 //uint64_t address_pscl2 = check_hit(PSCL2A[PQ.entry[index].cpu],get_index(PQ.entry[index].full_addr,IS_PSCL2),PQ.entry[index].cpu,&PQ.entry[PQ.head],false);
 
                          PACKET packet = PQ.entry[index];
              		 packet.fill_level = FILL_L1; //@Vishal: This packet will be sent from L2 to PTW, TODO: check if this is done or not
@@ -886,15 +894,15 @@ void PAGE_TABLE_WALKER::fill_mmu_cache(CACHE &cache, uint64_t next_level_base_ad
 	cache.MSHR.entry[0].ip = 0;
 	cache.MSHR.entry[0].fill_level = 0;
 	cache.MSHR.entry[0].type = TRANSLATION;
-	cache.MSHR.entry[0].event_cycle = current_core_cycle[cpu];
+	cache.MSHR.entry[0].event_cycle = current_core_cycle[packet->cpu];
 
 	cache.MSHR.next_fill_index = 0;
 	cache.MSHR.next_fill_cycle = current_core_cycle[packet->cpu];
 /*	if(cache_type == IS_PSCL2 || cache_type == IS_PSCL2_PB){
-		cout << (int)cache_type << " address " << cache.MSHR.entry[0].address << endl;
+		cout << cache.NAME << " address " << cache.MSHR.entry[0].address << endl;
 	
-	}*/
-
+	}
+*/
 	cache.MSHR.occupancy = 1;
 	cache.handle_fill();
 
@@ -951,12 +959,13 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address,uint8_t pac
 	    loc_add[current_core_cycle[cpu]] = address;
     }*/
     for (uint32_t way=0; way<cache.NUM_WAY; way++) {
-        if (cache.block[set][way].valid && (cache.block[set][way].cpu == packet_cpu) && (cache.block[set][way].tag == address)) {
+//        if (cache.block[set][way].valid && (cache.block[set][way].cpu == packet_cpu) && (cache.block[set][way].tag == address)) {
+        if (cache.block[set][way].valid  && (cache.block[set][way].tag == address)) {
 	    
 	    // COLLECT STATS
 	    if(cache.cache_type == IS_PSCL2 ){
-		    cache.sim_hit[packet_cpu][TRANSLATION]++;
-		    cache.sim_access[packet_cpu][TRANSLATION]++;
+		    cache.sim_hit[cpu][TRANSLATION]++;
+		    cache.sim_access[cpu][TRANSLATION]++;
 		    cache.PSCL2_update_replacement_state(cpu, set, way, cache.block[set][way].full_addr,0 , 0, TRANSLATION, 1);
 	    }
 	    if(cache.cache_type == IS_PSCL2_PB){
@@ -992,8 +1001,8 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address,uint8_t pac
     }*/
     if(cache.cache_type == IS_PSCL2 || cache.cache_type == IS_PSCL2_PB){
 	    //cout << " miss packet_cpu " << (int)packet_cpu << endl;
-	    cache.sim_miss[packet_cpu][TRANSLATION]++;
-	    cache.sim_access[packet_cpu][TRANSLATION]++;
+	    cache.sim_miss[cpu][TRANSLATION]++;
+	    cache.sim_access[cpu][TRANSLATION]++;
     }
     else{
 	    cache.sim_miss[cpu][TRANSLATION]++;

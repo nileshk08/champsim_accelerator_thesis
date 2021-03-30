@@ -195,6 +195,7 @@ void CACHE::handle_scratchpad_mshr_translation(uint8_t mshr_type)
 void CACHE::handle_fill()
 {
 	// handle fill
+//	cout << "Inside handle Fill " << NAME << " type " << (int)cache_type << endl;
 	PRINT77(
 	 if(cpu >= ACCELERATOR_START){
 		 cout << "inside handle_fill " << endl;
@@ -205,11 +206,11 @@ void CACHE::handle_fill()
         }
 	)
 	uint32_t fill_cpu = (MSHR.next_fill_index == MSHR_SIZE) ? NUM_CPUS : MSHR.entry[MSHR.next_fill_index].cpu;
-	/*if(cache_type == IS_PSCL2){
+/*	if(cache_type == IS_PSCL2){
  	cout << "handle fill cache " << NAME << " type " << (int)cache_type << endl;
-	cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
-	}*/
-	if(ITLB_FLAG)
+	cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << " current core cycle " << current_core_cycle[fill_cpu]<< endl;
+	}
+*/	if(ITLB_FLAG)
 		cout << "MSHR next fill cycle " << MSHR.next_fill_cycle  << " fill cpu " << fill_cpu << endl;
 	if (fill_cpu == NUM_CPUS)
 		return;
@@ -228,7 +229,10 @@ void CACHE::handle_fill()
 		if (cache_type == IS_LLC) {
 			way = llc_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
-		if(cache_type == IS_PSCL2){
+		else if(cache_type == IS_DTLB){
+			way = dtlb_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
+		}
+		else if(cache_type == IS_PSCL2){
 			way = PSCL2_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
 		else
@@ -245,6 +249,11 @@ void CACHE::handle_fill()
 				llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
 			}
+			else if (cache_type == IS_DTLB) {
+				dtlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+
+			}
+
 			else if (cache_type == IS_PSCL2) {
 				PSCL2_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
@@ -356,6 +365,10 @@ void CACHE::handle_fill()
 			// update replacement policy
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
+			}
+			else if (cache_type == IS_DTLB) {
+				dtlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+			
 			}
 			else if (cache_type == IS_PSCL2) {
 			/*	if(block[set][way].valid){
@@ -654,6 +667,10 @@ if (writeback_cpu == NUM_CPUS)
 			if (cache_type == IS_LLC) {
 				llc_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 			}
+			else if (cache_type == IS_DTLB) {
+				dtlb_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
+
+			}
 			else if (cache_type == IS_PSCL2) {
 				PSCL2_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 
@@ -796,6 +813,9 @@ if (writeback_cpu == NUM_CPUS)
 				if (cache_type == IS_LLC) {
 					way = llc_find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
 				}
+				else if (cache_type == IS_DTLB) {
+					way = dtlb_find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
+				}
 				else
 					way = find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
 
@@ -869,6 +889,10 @@ if (writeback_cpu == NUM_CPUS)
 					// update replacement policy
 					if (cache_type == IS_LLC) {
 						llc_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+					}
+					else if (cache_type == IS_DTLB) {
+						dtlb_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+
 					}
 					else if (cache_type == IS_PSCL2) {
 						PSCL2_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
@@ -1520,6 +1544,9 @@ void CACHE::handle_read()
 					llc_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 
 				}
+				else if (cache_type == IS_DTLB) {
+					dtlb_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
+				}
 				else
 					update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 
@@ -1649,7 +1676,7 @@ void CACHE::handle_read()
 						cout << " full_addr: " << RQ.entry[index].full_addr << dec;
 						cout << " cycle: " << RQ.entry[index].event_cycle << endl; });
 
-				if(cache_type == IS_DTLB){
+	/*			if(cache_type == IS_DTLB){
 					if(add_loc.count(RQ.entry[index].address-1)){
 						int count = 0;
 						uint64_t  location = add_loc[RQ.entry[index].address-1];
@@ -1668,7 +1695,7 @@ void CACHE::handle_read()
 					loc_add[current_core_cycle[cpu]] = RQ.entry[index].address;
 
 				}
-
+*/
 
 				// check mshr
 				uint8_t miss_handled = 1;
@@ -2153,6 +2180,9 @@ void CACHE::handle_prefetch()
 					llc_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
 
 				}
+				else if (cache_type == IS_DTLB) {
+					dtlb_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
+				}
 				else
 					update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
 
@@ -2612,6 +2642,9 @@ uint32_t CACHE::get_way(uint64_t address, uint32_t set)
 
 void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
 {
+/*	if(cache_type == IS_PSCL2){
+		cout << "filling cache for " << NAME << " way  set " << way << " " << set << endl;
+	}*/
 #ifdef SANITY_CHECK
 
 #ifdef PUSH_DTLB_PB
