@@ -13,7 +13,7 @@ void CACHE::dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hi
 //	if(knob_cloudsuite)
 //		 pf_addr = ((addr>>LOG2_PAGE_SIZE >> 9 )+1) <<  9;
 //	else
-		 pf_addr = ((addr>>LOG2_PAGE_SIZE)+1) << LOG2_PAGE_SIZE;
+		 pf_addr = ((addr>>LOG2_PAGE_SIZE)+8) << LOG2_PAGE_SIZE;
 	
     DP ( if (warmup_complete[cpu]) {
     cout << "[" << NAME << "] " << __func__ << " instr_id: " << prefetch_id << hex << " base_cl: " << (addr>>LOG2_PAGE_SIZE);

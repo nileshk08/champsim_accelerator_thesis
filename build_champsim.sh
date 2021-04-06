@@ -1,8 +1,8 @@
 #!/bin/bash
 
-if [ "$#" -ne 10 ]; then
+if [ "$#" -ne 14 ]; then
     echo "Illegal number of parameters"
-    echo "Usage: ./build_champsim.sh [branch_pred] [l1d_pref] [l2c_pref] [llc_pref] [itlb_pref] [dtlb_pref] [stlb_pref] [llc_repl] [num_core] [num_accelerators]"
+    echo "Usage: ./build_champsim.sh [branch_pred] [l1d_pref] [l2c_pref] [llc_pref] [itlb_pref] [dtlb_pref] [stlb_pref] [PTL2_pref] [llc_repl][PSCL2_repl][dtlb_repl][stlb_repl] [num_core] [num_accelerators]"
     exit 1
 fi
 
@@ -14,9 +14,13 @@ LLC_PREFETCHER=$4   # prefetcher/*.llc_pref
 ITLB_PREFETCHER=$5  # prefetcher/*.itlb_pref
 DTLB_PREFETCHER=$6  # prefetcher/*.dtlb_pref
 STLB_PREFETCHER=$7  # prefetcher/*.stlb_pref
-LLC_REPLACEMENT=$8  # replacement/*.llc_repl
-NUM_CORE=$9         # tested up to 8-core system
-NUM_ACCELERATOR=${10} # number of accelerators
+PSCL2_PREFETCHER=$8  # prefetcher/*.stlb_pref
+LLC_REPLACEMENT=$9  # replacement/*.llc_repl
+PSCL2_REPLACEMENT=${10} #replacement /*.pscl2_repl
+DTLB_REPLACEMENT=${11} #replacement /*.dtlb_repl
+STLB_REPLACEMENT=${12} #replacement /*.stlb_repl
+NUM_CORE=${13}         # tested up to 8-core system
+NUM_ACCELERATOR=${14} # number of accelerators
 
 ############## Some useful macros ###############
 BOLD=$(tput bold)
@@ -73,10 +77,34 @@ if [ ! -f ./prefetcher/${STLB_PREFETCHER}.stlb_pref ]; then
     exit 1
 fi
 
+if [ ! -f ./prefetcher/${PSCL2_PREFETCHER}.pscl2_pref ]; then
+    echo "[ERROR] Cannot find PTL2 prefetcher"
+        echo "[ERROR] Possible PTL2 prefetchers from prefetcher/*.pscl2_pref "
+    find prefetcher -name "*.pscl2_pref"
+    exit 1
+fi
 if [ ! -f ./replacement/${LLC_REPLACEMENT}.llc_repl ]; then
     echo "[ERROR] Cannot find LLC replacement policy"
 	echo "[ERROR] Possible LLC replacement policy from replacement/*.llc_repl"
     find replacement -name "*.llc_repl"
+    exit 1
+fi
+if [ ! -f ./replacement/${PSCL2_REPLACEMENT}.pscl2_repl ]; then
+    echo "[ERROR] Cannot find PSCL2 replacement policy"
+	echo "[ERROR] Possible PSCL2 replacement policy from replacement/*.llc_repl"
+    find replacement -name "*.pscl2_repl"
+    exit 1
+fi
+if [ ! -f ./replacement/${DTLB_REPLACEMENT}.pscl2_repl ]; then
+    echo "[ERROR] Cannot find DTLB replacement policy"
+	echo "[ERROR] Possible DTLB replacement policy from replacement/*.llc_repl"
+    find replacement -name "*.dtlb_repl"
+    exit 1
+fi
+if [ ! -f ./replacement/${STLB_REPLACEMENT}.pscl2_repl ]; then
+    echo "[ERROR] Cannot find STLB replacement policy"
+	echo "[ERROR] Possible STLB replacement policy from replacement/*.llc_repl"
+    find replacement -name "*.stlb_repl"
     exit 1
 fi
 
@@ -127,7 +155,11 @@ cp prefetcher/${LLC_PREFETCHER}.llc_pref prefetcher/llc_prefetcher.cc
 cp prefetcher/${ITLB_PREFETCHER}.itlb_pref prefetcher/itlb_prefetcher.cc
 cp prefetcher/${DTLB_PREFETCHER}.dtlb_pref prefetcher/dtlb_prefetcher.cc
 cp prefetcher/${STLB_PREFETCHER}.stlb_pref prefetcher/stlb_prefetcher.cc
+cp prefetcher/${PSCL2_PREFETCHER}.pscl2_pref prefetcher/pscl2_prefetcher.cc
 cp replacement/${LLC_REPLACEMENT}.llc_repl replacement/llc_replacement.cc
+cp replacement/${PSCL2_REPLACEMENT}.pscl2_repl replacement/pscl2_replacement.cc
+cp replacement/${DTLB_REPLACEMENT}.dtlb_repl replacement/dtlb_replacement.cc
+cp replacement/${STLB_REPLACEMENT}.stlb_repl replacement/stlb_replacement.cc
 
 # Build
 mkdir -p bin
@@ -151,11 +183,15 @@ echo "LLC Prefetcher: ${LLC_PREFETCHER}"
 echo "ITLB Prefetcher: ${ITLB_PREFETCHER}"
 echo "DTLB Prefetcher: ${DTLB_PREFETCHER}"
 echo "STLB Prefetcher: ${STLB_PREFETCHER}"
+echo "PSCL2 Prefetcher: ${PSCL2_PREFETCHER}"
 echo "LLC Replacement: ${LLC_REPLACEMENT}"
+echo "PSCL2 Replacement: ${PSCL2_REPLACEMENT}"
+echo "DTLB Replacement: ${DTLB_REPLACEMENT}"
+echo "STLB Replacement: ${STLB_REPLACEMENT}"
 echo "CPUs: ${NUM_CORE}"
 #echo "CPU Range: 0 - $CPU_RANGE"
 echo "Accelerators: ${NUM_ACCELERATOR} "
-BINARY_NAME="${BRANCH}-${L1D_PREFETCHER}-${L2C_PREFETCHER}-${LLC_PREFETCHER}-${ITLB_PREFETCHER}-${DTLB_PREFETCHER}-${STLB_PREFETCHER}-${LLC_REPLACEMENT}-${NUM_CORE}cpu-${NUM_ACCELERATOR}accelerator"
+BINARY_NAME="${BRANCH}-${L1D_PREFETCHER}-${L2C_PREFETCHER}-${LLC_PREFETCHER}-${ITLB_PREFETCHER}-${DTLB_PREFETCHER}-${STLB_PREFETCHER}-${PSCL2_PREFETCHER}-${LLC_REPLACEMENT}-${PSCL2_REPLACEMENT}-${DTLB_REPLACEMENT}-${STLB_REPLACEMENT}-${NUM_CORE}cpu-${NUM_ACCELERATOR}accelerator"
 echo "Binary: bin/${BINARY_NAME}"
 echo " " 
 mv bin/champsim bin/${BINARY_NAME}
@@ -174,4 +210,8 @@ cp prefetcher/no.llc_pref prefetcher/llc_prefetcher.cc
 cp prefetcher/no.itlb_pref prefetcher/itlb_prefetcher.cc
 cp prefetcher/no.dtlb_pref prefetcher/dtlb_prefetcher.cc
 cp prefetcher/no.stlb_pref prefetcher/stlb_prefetcher.cc
+cp prefetcher/no.pscl2_pref prefetcher/pscl2_prefetcher.cc
 cp replacement/lru.llc_repl replacement/llc_replacement.cc
+cp replacement/lru.pscl2_repl replacement/pscl2_replacement.cc
+cp replacement/lru.dtlb_repl replacement/dtlb_replacement.cc
+cp replacement/lru.stlb_repl replacement/stlb_replacement.cc

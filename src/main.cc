@@ -704,8 +704,38 @@ void swap_context(uint8_t swap_cpu_0, uint8_t swap_cpu_1)
 
 }
 
+int prefetch_counter = 0;
+bool prefetch_flag = true;
 void check_prefetch_status_ptl2(){
-	for(int i=1;i<NUM_CPUS; i++){
+	CACHE *cache = &ooo_cpu[ACCELERATOR_START].PTW.PSCL2;
+/*	if(prefetch_counter == NUM_CPUS){ //one round completed for all the cpus
+		prefetch_flag = false;
+		cache->is_prefetch[prefetch_counter-1] = false;
+		multimap<uint64_t,int> ptw_hit;
+		for(int i=0;i<NUM_CPUS; i++){
+			ptw_hit.insert(pair<uint64_t, int> (ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB.sim_hit[i][TRANSLATION], i));
+//			ptw_hit[cache->sim_hit[i][TRANSLATION]] = i;
+			cout << " ptw hit " << ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB.sim_hit[i][TRANSLATION] << endl;
+		}
+		cout << "final is " <<  ptw_hit.rbegin()->second << endl;
+		auto itr = ptw_hit.rbegin();
+		cache->is_prefetch[itr->second] = true;
+/*		++itr;
+		cache->is_prefetch[itr->second] = true;
+		return;
+
+	}*/
+	cache->is_prefetch[prefetch_counter] = true;
+	if(prefetch_counter == 0)
+		cache->is_prefetch[NUM_CPUS-1] = false;
+	else
+		cache->is_prefetch[prefetch_counter-1] = false;
+//	cout << "prefetch changed for prefetch_counter " << prefetch_counter << endl;
+
+	prefetch_counter++;
+//	prefetch_counter %= NUM_CPUS;
+	    
+/*	for(int i=1;i<NUM_CPUS; i++){
 		CACHE *cache = &ooo_cpu[ACCELERATOR_START].PTW.PSCL2;
 		cache->is_prefetch[i] = false;
 		if((cache->sim_hit[i][TRANSLATION]*100 / cache->sim_access[i][TRANSLATION]) >= PREFETCH_THRESHOLD){
@@ -715,7 +745,7 @@ void check_prefetch_status_ptl2(){
 			cache->is_prefetch[i] = false;
 		cout << "cpu " << i << " sim hit " << cache->sim_hit[i][TRANSLATION] << " sim access " << cache->sim_access[i][TRANSLATION] << 
 			" THreshold " << PREFETCH_THRESHOLD << " is prefech " << cache->is_prefetch << endl;
-	}
+	}*/
 }
 int main(int argc, char** argv)
 {
@@ -1007,6 +1037,7 @@ int main(int argc, char** argv)
 		ooo_cpu[i].STLB.upper_level_dcache[i] = &ooo_cpu[i].DTLB;
 	}
         ooo_cpu[i].STLB.stlb_prefetcher_initialize();
+	ooo_cpu[i].STLB.stlb_initialize_replacement();
 #ifdef INS_PAGE_TABLE_WALKER
 	ooo_cpu[i].STLB.lower_level = &ooo_cpu[i].PTW;
 #endif
@@ -1274,6 +1305,8 @@ int main(int argc, char** argv)
 		    prefetch_check[i] = false;
 		    check_prefetch_status_ptl2();	
 	    }*/
+	    if(all_warmup_complete && prefetch_flag && i==0 && (current_core_cycle[i] % 10000000  == 0) )
+		    check_prefetch_status_ptl2();	
           
 	    if(((all_warmup_complete > NUM_CPUS) && (simulation_complete[i] == 0) && (ooo_cpu[i].num_retired >= (ooo_cpu[i].begin_sim_instr + ooo_cpu[i].simulation_instructions)))) {
          //    if(simulation_complete[i] == 1){	/*@Vasudha STOP simulation once trace file ends*/
@@ -1477,6 +1510,7 @@ int main(int argc, char** argv)
 
     cout<<"DRAM PAGES: "<<DRAM_PAGES<<endl;
     cout<<"Allocated PAGES: "<<allocated_pages<<endl;
+   
 
     return 0;
 }

@@ -232,6 +232,9 @@ void CACHE::handle_fill()
 		else if(cache_type == IS_DTLB){
 			way = dtlb_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
+		else if(cache_type == IS_STLB){
+			way = stlb_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
+		}
 		else if(cache_type == IS_PSCL2){
 			way = PSCL2_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
@@ -251,6 +254,10 @@ void CACHE::handle_fill()
 			}
 			else if (cache_type == IS_DTLB) {
 				dtlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+
+			}
+			else if (cache_type == IS_STLB) {
+				stlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
 			}
 
@@ -368,6 +375,10 @@ void CACHE::handle_fill()
 			}
 			else if (cache_type == IS_DTLB) {
 				dtlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+			
+			}
+			else if (cache_type == IS_STLB) {
+				stlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 			
 			}
 			else if (cache_type == IS_PSCL2) {
@@ -671,6 +682,10 @@ if (writeback_cpu == NUM_CPUS)
 				dtlb_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 
 			}
+			else if (cache_type == IS_STLB) {
+				stlb_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
+
+			}
 			else if (cache_type == IS_PSCL2) {
 				PSCL2_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
 
@@ -816,6 +831,9 @@ if (writeback_cpu == NUM_CPUS)
 				else if (cache_type == IS_DTLB) {
 					way = dtlb_find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
 				}
+				else if (cache_type == IS_STLB) {
+					way = stlb_find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
+				}
 				else
 					way = find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
 
@@ -892,6 +910,10 @@ if (writeback_cpu == NUM_CPUS)
 					}
 					else if (cache_type == IS_DTLB) {
 						dtlb_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+
+					}
+					else if (cache_type == IS_STLB) {
+						stlb_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
 
 					}
 					else if (cache_type == IS_PSCL2) {
@@ -1360,7 +1382,7 @@ void CACHE::handle_read()
 					RQ.entry[index].data = ooo_cpu[read_cpu].DTLB_PB.block[0][way_pb].data;
 					ooo_cpu[read_cpu].DTLB_PB.pf_useful++;
 					// If DTLB prefetch buffer gets hit, fill DTLB and then proceed
-					way = find_victim(read_cpu, RQ.entry[index].instr_id, set, block[set], RQ.entry[index].ip, RQ.entry[index].full_addr, RQ.entry[index].type);
+					way = dtlb_find_victim(read_cpu, RQ.entry[index].instr_id, set, block[set], RQ.entry[index].ip, RQ.entry[index].full_addr, RQ.entry[index].type);
 					//cout << "DTLB_PB hit "<< RQ.entry[index].instr_id << " " << ooo_cpu[read_cpu].DTLB_PB.pf_useful << endl;
 					
 					if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
@@ -1546,6 +1568,9 @@ void CACHE::handle_read()
 				}
 				else if (cache_type == IS_DTLB) {
 					dtlb_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
+				}
+				else if (cache_type == IS_STLB) {
+					stlb_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 				}
 				else
 					update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
@@ -2130,6 +2155,9 @@ void CACHE::handle_read()
 					STLBPRINT( if(cpu >= ACCELERATOR_START) cout << " removing from RQ from second fill " << NAME << " cpu " <<  RQ.entry[index].cpu << " rob " << RQ.entry[index].rob_index << endl;)
 					if(STLB_FLAG)
 						cout << "removed from RQ "  << endl;
+				/*	if(cache_type == IS_DTLB && warmup_complete){
+						cout << RQ.entry[index].instr_id << " " << RQ.entry[index].address << endl;
+					}*/
 					RQ.remove_queue(&RQ.entry[index]);
 					reads_available_this_cycle--;
 				}
@@ -2182,6 +2210,9 @@ void CACHE::handle_prefetch()
 				}
 				else if (cache_type == IS_DTLB) {
 					dtlb_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
+				}
+				else if (cache_type == IS_STLB) {
+					stlb_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
 				}
 				else
 					update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);

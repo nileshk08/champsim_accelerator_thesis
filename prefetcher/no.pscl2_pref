@@ -5,7 +5,7 @@ void CACHE::PSCL2_prefetcher_initialize()
 
 }
 
-void CACHE::PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_id)
+void CACHE::PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_id,uint8_t packet_cpu)
 {
 
 }
