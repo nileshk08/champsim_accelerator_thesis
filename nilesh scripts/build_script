@@ -1,2 +1,6 @@
-./build_champsim.sh bimodal no no no no no no lru srrip 0 1; ./build_champsim.sh bimodal no no no no no no lru srrip 0 4; ./build_champsim.sh bimodal no no no no no no lru srrip 0 8;
 
+
+
+./build_champsim.sh bimodal no no no no no no no lru lru lru lru 0 1; ./build_champsim.sh bimodal no no no no no no no lru lru lru lru 0 4;./build_champsim.sh bimodal no no no no no no no lru lru lru lru 0 8;
+
+./build_champsim.sh bimodal no no no no no no next_line lru lru lru lru 0 1; ./build_champsim.sh bimodal no no no no no no next_line lru lru lru lru 0 4; ./build_champsim.sh bimodal no no no no no no next_line lru lru lru lru 0 8

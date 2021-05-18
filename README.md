@@ -30,7 +30,7 @@ $ ./build_champsim.sh ${BRANCH} ${ITLB_PREFETCHER} ${DTLB_PREFETCHER} ${STLB_PRE
 
 # Run simulation
 
-Execute `run_champsim.sh` with proper input arguments. The default `TRACE_DIR` in `run_1accelerator.sh` is set to `$PWD/accelerator_traces`. <br>
+Execute `run_1accelerator.sh` with proper input arguments. The default `TRACE_DIR` in `run_1accelerator.sh` is set to `$PWD/accelerator_traces`. <br>
 
 * Single-accelerator simulation: Run simulation with `run_1accelerator.sh` script.
 
@@ -54,81 +54,23 @@ $ ./run_4accelerator.sh bimodal-no-no-no-no-lru-lru-lru-1accelerator 20 50 10 al
 ```
 Note that we need to specify multiple trace files for `run_4accelerator.sh`. 
 
+Similarly, we can simulate with 8 accelerators by using script `run_8accelerator.sh`.
 
-# Add your own branch predictor, data prefetchers, and replacement policy
-**Copy an empty template**
-```
-$ cp branch/branch_predictor.cc prefetcher/mybranch.bpred
-$ cp prefetcher/l1d_prefetcher.cc prefetcher/mypref.l1d_pref
-$ cp prefetcher/l2c_prefetcher.cc prefetcher/mypref.l2c_pref
-$ cp prefetcher/llc_prefetcher.cc prefetcher/mypref.llc_pref
-$ cp replacement/llc_replacement.cc replacement/myrepl.llc_repl
-```
+# Simulate with your own  prefetchers, and replacement policy
 
-**Work on your algorithms with your favorite text editor**
-```
-$ vim branch/mybranch.bpred
-$ vim prefetcher/mypref.l1d_pref
-$ vim prefetcher/mypref.l2c_pref
-$ vim prefetcher/mypref.llc_pref
-$ vim replacement/myrepl.llc_repl
-```
+Prefetchers which are already available are present in the folder `prefetcher`. If you want to add or edit an existing prefetcher, then you can add or edit the files present in this folder. For our work, we have used the `next_line` and the `constant_stride` prefetcher.
+
+Similarly, various replacement policies are available in folder `replacement`. You can add or edit the existing replacement policy. For our work, we have used SRRIP replacement policy.
+
 
 **Compile and test**
 ```
-$ ./build_champsim.sh mybranch mypref mypref mypref myrepl 1
-$ ./run_champsim.sh mybranch-mypref-mypref-mypref-myrepl-1core 1 10 bzip2_183B
+$ ./build_champsim.sh bimodal no no no next_line srrip srrip srrip 4
+$ ./run_4accelerator.sh bimodal-no-no-no-next_line-srrip-srrip-srrip-4accelerator 1 1 10 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3
 ```
-
-# How to create traces
-
-We have included only 4 sample traces, taken from SPEC CPU 2006. These 
-traces are short (10 million instructions), and do not necessarily cover the range of behaviors your 
-replacement algorithm will likely see in the full competition trace list (not
-included).  We STRONGLY recommend creating your own traces, covering
-a wide variety of program types and behaviors.
-
-The included Pin Tool champsim_tracer.cpp can be used to generate new traces.
-We used Pin 3.2 (pin-3.2-81205-gcc-linux), and it may require 
-installing libdwarf.so, libelf.so, or other libraries, if you do not already 
-have them. Please refer to the Pin documentation (https://software.intel.com/sites/landingpage/pintool/docs/81205/Pin/html/)
-for working with Pin 3.2.
-
-Get this version of Pin:
-```
-wget http://software.intel.com/sites/landingpage/pintool/downloads/pin-3.2-81205-gcc-linux.tar.gz
-```
-
-**Use the Pin tool like this**
-```
-pin -t obj-intel64/champsim_tracer.so -- <your program here>
-```
-
-The tracer has three options you can set:
-```
--o
-Specify the output file for your trace.
-The default is default_trace.champsim
-
--s <number>
-Specify the number of instructions to skip in the program before tracing begins.
-The default value is 0.
-
--t <number>
-The number of instructions to trace, after -s instructions have been skipped.
-The default value is 1,000,000.
-```
-For example, you could trace 200,000 instructions of the program ls, after
-skipping the first 100,000 instructions, with this command:
-```
-pin -t obj/champsim_tracer.so -o traces/ls_trace.champsim -s 100000 -t 200000 -- ls
-```
-Traces created with the champsim_tracer.so are approximately 64 bytes per instruction,
-but they generally compress down to less than a byte per instruction using xz compression.
 
 # Evaluate Simulation
 
 ChampSim measures the IPC (Instruction Per Cycle) value as a performance metric. <br>
 There are some other useful metrics printed out at the end of simulation. <br>
 
-Good luck and be a champion! <br>

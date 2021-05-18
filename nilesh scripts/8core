@@ -1,31 +1,65 @@
+
+
+
 #-------------8 core
 
-./run_8core.sh ptw2_victim_lru1_8acc 20 50 10 alexnet_500M.trace.gz 0 lenet-5_500M.trace.gz 1 lstm_500M.trace.gz 2 svhn_500M.trace.gz 3 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7 &
+	./run_8core.sh 2_ideal_8acc 50 50 10 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 &
 
-./run_8core.sh ptw2_victim_lru1_8acc 20 50 11 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7  mcf_158B.trace.gz 8 mcf_250B.trace.gz 9 mcf_46B.trace.gz 10 GemsFDTD_716B.trace.gz 11 &
-
-
-
-./run_8core.sh ptw2_srrip02_8acc 20 50 10 alexnet_500M.trace.gz 0 lenet-5_500M.trace.gz 1 lstm_500M.trace.gz 2 svhn_500M.trace.gz 3 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7 &
-
-./run_8core.sh ptw2_srrip02_8acc 20 50 11 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7  mcf_158B.trace.gz 8 mcf_250B.trace.gz 9 mcf_46B.trace.gz 10 GemsFDTD_716B.trace.gz 11 &
-
-./run_8core.sh ptw2_srrip03_8acc 20 50 10 alexnet_500M.trace.gz 0 lenet-5_500M.trace.gz 1 lstm_500M.trace.gz 2 svhn_500M.trace.gz 3 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7 &
-
-./run_8core.sh ptw2_srrip03_8acc 20 50 11 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7  mcf_158B.trace.gz 8 mcf_250B.trace.gz 9 mcf_46B.trace.gz 10 GemsFDTD_716B.trace.gz 11 &
+	./run_8core.sh 2_ideal_8acc 50 50 11  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_716B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
+	
+	
+	
+	
+	./run_8core.sh ptw_rr_50M_srrip_2pref_dstlb_8acc 20 50 11  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
+	
+	./run_8core.sh ptw_rr_50M_srrip_4pref_dstlb_8acc 20 50 11  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
 
 
+./run_8core.sh dtlb_pref_cs_ptw_rr_4offset_8acc 20 50 10 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 &
 
-
-
-
-./run_8core.sh ptw2_drrip_8acc 20 50 10 alexnet_500M.trace.gz 0 lenet-5_500M.trace.gz 1 lstm_500M.trace.gz 2 svhn_500M.trace.gz 3 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7 &
-
-./run_8core.sh ptw2_drrip_8acc 20 50 11 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7  mcf_158B.trace.gz 8 mcf_250B.trace.gz 9 mcf_46B.trace.gz 10 GemsFDTD_716B.trace.gz 11 &
+./run_8core.sh dtlb_pref_cs_ptw_rr_4offset_8acc 20 50 11  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
 
 
 
+./run_8core.sh ptw_rr_50M_srrip_4pref_dstlb_8acc 20 50 10 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 &
 
-./run_8core.sh ptw2_victim_lru1_8acc 20 50 10 alexnet_500M.trace.gz 0 lenet-5_500M.trace.gz 1 lstm_500M.trace.gz 2 svhn_500M.trace.gz 3 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7 &
+./run_8core.sh ptw_rr_50M_srrip_4pref_dstlb_8acc 20 50 11  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
 
-./run_8core.sh ptw2_victim_lru1_8acc 20 50 11 cc_sv.input-hugebubbles-00020.champsim.gz 4 cc_sv.input-uk-2002.champsim.gz 5 randomizer.input-hugebubbles-00020.champsim.gz 6 randomizer.input-uk-2002.champsim.gz 7  mcf_158B.trace.gz 8 mcf_250B.trace.gz 9 mcf_46B.trace.gz 10 GemsFDTD_716B.trace.gz 11 &
+
+
+
+
+
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 10 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 11 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 12 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 13 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 14 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 15 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 8  resnet-50_500M.trace.gz 6 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 17 svhn_500M.trace.gz 7 alexnet_500M.trace.gz 0 cifar10_500M.trace.gz 1 inception_500M.trace.gz 2 lenet-5_500M.trace.gz 3 lstm_500M.trace.gz 4 nin_500M.trace.gz 5 resnet-50_500M.trace.gz 6  &
+
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 18  cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 &
+	
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 19  mcf_158B.trace.gz 1 GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7  cc_sv.input-uk-2002.champsim.gz 0 &
+		
+./run_8core.sh 1_ptw_1active_4offset_8acc 20 50 20   GemsFDTD_78B.trace.gz 2 nin_500M.trace.gz 3 resnet-50_500M.trace.gz 4 squeezenet_500M.trace.gz 5 vgg-19_500M.trace.gz 6 alexnet_500M.trace.gz 7 cc_sv.input-uk-2002.champsim.gz 0 mcf_158B.trace.gz 1 &
+
+
+
+
+
+
+
+
+
+
+

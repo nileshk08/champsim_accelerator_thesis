@@ -1,1 +1,5 @@
-mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-8accelerator ptw2_victim_lru1_8acc; mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-4accelerator ptw2_victim_lru1_4acc; mv bimodal-no-no-no-no-no-no-lru-lru-0cpu-1accelerator ptw2_victim_lru1_1acc
+mv bimodal-no-no-no-no-no-no-no-lru-lru-lru-lru-0cpu-8accelerator 2_ideal_8acc; mv bimodal-no-no-no-no-no-no-no-lru-lru-lru-lru-0cpu-4accelerator 2_ideal_4acc; mv bimodal-no-no-no-no-no-no-no-lru-lru-lru-lru-0cpu-1accelerator 2_ideal_1acc
+
+mv bimodal-no-no-no-no-no-no-next_line-lru-lru-lru-lru-0cpu-8accelerator 1_ptw_rr_1active_4offset_8acc; mv bimodal-no-no-no-no-no-no-next_line-lru-lru-lru-lru-0cpu-4accelerator 1_ptw_rr_1active_4offset_4acc; mv bimodal-no-no-no-no-no-no-next_line-lru-lru-lru-lru-0cpu-1accelerator 1_ptw_rr_1active_4offset_1acc
+
+
