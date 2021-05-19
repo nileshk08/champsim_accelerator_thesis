@@ -17,17 +17,17 @@
 #define PSCL2_SET 1
 #define PSCL2_WAY 32
 
-#define PSCL2_VB_SET 4
+#define PSCL2_VB_SET 4		//Nilesh: victim buffer
 #define PSCL2_VB_WAY 8
 
-#define PSCL2_PB_SET 1
+#define PSCL2_PB_SET 1		//Nilesh: prefetch buffer
 #define PSCL2_PB_WAY 16
 
 #define PTW_RQ_SIZE 128//Should be greater than or equal to STLB MSHR Size
 #define PTW_WQ_SIZE 16
-#define PTW_MSHR_SIZE IOMMU_PTW_HANDLE 
+#define PTW_MSHR_SIZE IOMMU_PTW_HANDLE		//Nilesh: MSHR size increses to handle multiple requests concurrently 
 #define PTW_PQ_SIZE 128
-#define PTW_PREFETCH_MSHR_SIZE IOMMU_PREFETCH_PTW_HANDLE
+#define PTW_PREFETCH_MSHR_SIZE IOMMU_PREFETCH_PTW_HANDLE		//Nilesh: MSHR size for prefetch buffer
 
 #define MMU_CACHE_LATENCY 1
 
@@ -83,6 +83,8 @@ class PAGE_TABLE_WALKER : public MEMORY {
 	unordered_map <uint64_t, uint64_t> addr_cycle;
 	
 	uint64_t previous_ppage, num_adjacent_page, allocated_pages;
+
+	//Nilesh: added for calculating reuse distance
 	unordered_map<uint64_t,uint64_t> add_loc;
 	unordered_set<uint64_t> coldMiss,total_address;
     map<uint64_t,uint64_t> loc_add, dist_count;
@@ -92,7 +94,7 @@ class PAGE_TABLE_WALKER : public MEMORY {
     PACKET_QUEUE WQ{NAME + "_WQ", PTW_WQ_SIZE}, // write queue
                  RQ{NAME + "_RQ", PTW_RQ_SIZE}, // read queue
                  MSHR{NAME + "_MSHR", PTW_MSHR_SIZE}, // MSHR
-		 PREFETCH_MSHR{NAME + "_PREFETCH_MSHR", PTW_PREFETCH_MSHR_SIZE}, //PREFETCH MSHR @NILESH: multiple PTW for prefetching
+		 PREFETCH_MSHR{NAME + "_PREFETCH_MSHR", PTW_PREFETCH_MSHR_SIZE}, //PREFETCH MSHR @Nilesh: multiple PTW for prefetching
 		 PQ{NAME+ "_PQ", PTW_PQ_SIZE};	      // PQ
 
 
@@ -100,8 +102,8 @@ class PAGE_TABLE_WALKER : public MEMORY {
           PSCL4{"PSCL4", PSCL4_SET, PSCL4_WAY, PSCL4_SET*PSCL4_WAY, 0, 0, 0, 1}, //Translation from L5->L3
           PSCL3{"PSCL3", PSCL3_SET, PSCL3_WAY, PSCL3_SET*PSCL3_WAY, 0, 0, 0, 1}, //Translation from L5->L2
           PSCL2{"PSCL2", PSCL2_SET, PSCL2_WAY, PSCL2_SET*PSCL2_WAY, 0, 0, 0, 1}, //Translation from L5->L1
-          PSCL2_VB{"PSCL2_VB", PSCL2_VB_SET, PSCL2_VB_WAY, PSCL2_VB_SET*PSCL2_VB_WAY, 0, 0, 0, 1}, //Victim Buffer for PTL2
-          PSCL2_PB{"PSCL2_PB", PSCL2_PB_SET, PSCL2_PB_WAY, PSCL2_PB_SET*PSCL2_PB_WAY, 0, 0, 0, 1}; //Prefetch Buffer Victim Buffer for PTL2
+          PSCL2_VB{"PSCL2_VB", PSCL2_VB_SET, PSCL2_VB_WAY, PSCL2_VB_SET*PSCL2_VB_WAY, 0, 0, 0, 1}, //Nilesh: Victim Buffer for PTL2
+          PSCL2_PB{"PSCL2_PB", PSCL2_PB_SET, PSCL2_PB_WAY, PSCL2_PB_SET*PSCL2_PB_WAY, 0, 0, 0, 1}; //Nilesh: Prefetch Buffer Victim Buffer for PTL2
 
     vector<CACHE> PSCL2A;
 //    CACHE* PSCL2A = new CACHE[8];
@@ -157,6 +159,7 @@ class PAGE_TABLE_WALKER : public MEMORY {
          add_wq(PACKET *packet),
          add_pq(PACKET *packet);
 
+    //Nilesh: distributed code in different methods
     void handle_fill(uint8_t mshr_type),
 	 handle_RQ(),
 	 handle_PQ();

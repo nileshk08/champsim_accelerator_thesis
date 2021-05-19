@@ -1,8 +1,10 @@
 #include "ooo_cpu.h"
 #include "uncore.h"
 
+//Nilesh: method for handling mshr
 void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 
+	//Nilesh: 2 types of mshr one is holding regular entries and another one holding prefetch entries
         PACKET_QUEUE *temp_mshr = mshr_type ? &MSHR : &PREFETCH_MSHR;
         uint8_t mshr_size = mshr_type ? PTW_MSHR_SIZE : PTW_PREFETCH_MSHR_SIZE;
 //	if(MSHR.occupancy > 0) //Handle pending request, only one request is serviced at a time.
@@ -68,7 +70,7 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 						}
 					}
 				}
-				if(mshr_type){ //@Nilesh: Will not execute for prefetch buffer of PTL2
+				if(mshr_type){ //Nilesh: Will not execute for prefetch buffer of PTL2
 
 					uint64_t offset = get_offset(temp_mshr->entry[index].full_virtual_address, IS_PTL1);
 					next_level_base_addr = curr_page->next_level_base_addr[offset];
@@ -126,7 +128,7 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 
 				PRINT77(cout << "inside else " <<   endl;) 
 					bool flag = false;
-				if(cpu < ACCELERATOR_START)
+				if(cpu < ACCELERATOR_START)	//Nilesh: condition added for accelerator
 					flag = ooo_cpu[cpu].L2C.RQ.occupancy < ooo_cpu[cpu].L2C.RQ.SIZE ? true : false;
 				else
 					flag = uncore.DRAM.get_occupancy(1, temp_mshr->entry[index].address) < uncore.DRAM.get_size(1, temp_mshr->entry[index].address) ? true : false;
@@ -140,7 +142,7 @@ void PAGE_TABLE_WALKER::handle_fill(uint8_t mshr_type){
 					int rq_index;
 					if(cpu < ACCELERATOR_START)
 						rq_index = ooo_cpu[cpu].L2C.add_rq(&temp_mshr->entry[index]);
-					else
+					else	//Nilesh: data added to dram
 						rq_index = uncore.DRAM.add_rq(&temp_mshr->entry[index]);
 					if(rq_index != -1)
 					{
@@ -195,7 +197,7 @@ void PAGE_TABLE_WALKER::handle_RQ(){
 			PACKET packet = RQ.entry[index];
 
 			packet.fill_level = FILL_L1; //@Vishal: This packet will be sent from L2 to PTW, TODO: check if this is done or not
-			packet.cpu = RQ.entry[index].cpu;//@Nilesh: Added for accelerator cpu
+			packet.cpu = RQ.entry[index].cpu;//Nilesh: Added for accelerator cpu
 			packet.instr_id = RQ.entry[index].instr_id;
 			packet.ip = RQ.entry[index].ip;	//@Vasudha: IP required to calculate address of cloudsuite benchmarks
 			packet.type = TRANSLATION;
@@ -364,6 +366,7 @@ void PAGE_TABLE_WALKER::handle_PQ(){
 		
 			 uint64_t next_address = UINT64_MAX;
 	
+			 //Nilesh: prefetch only works for PTL2 so it will not check for upper levels of PTW
 	                 if(address_pscl2 != UINT64_MAX)
 	                 {
 				// cout << " pscl2 in handle PQ  " << address_pscl2 << endl; 
@@ -475,27 +478,9 @@ void PAGE_TABLE_WALKER::operate()
 	assert(0);
 #endif
 
-/*	if(cpu == 0){
-		cout << "*************************** beforePTW cpu " << cpu << endl;
-                cout << "occupancy mshr " << MSHR.occupancy << " rq " << RQ.occupancy << " PQ " << PQ.occupancy << endl;
-                cout << "cache type "<< NAME << " RQ occupancy " << RQ.occupancy << endl;
-                RQ.queuePrint();
-                cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
-                MSHR.queuePrint();
-                cout << "cache type "<< NAME << " PQ occupancy " << PQ.occupancy << endl;
-		PQ.queuePrint();
-	}*/
 	
 	if(cpu >= ACCELERATOR_START){
-	/*	cout << "*************************** cpu " << cpu << endl;
-                cout << "occupancy mshr " << MSHR.occupancy << " rq " << RQ.occupancy << " PQ " << PQ.occupancy << endl;
-                cout << "cache type "<< NAME << " PQ occupancy " << PQ.occupancy << endl;
-                PQ.queuePrint();
-       /*         cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
-                MSHR.queuePrint();
-*/
 		int handle_width = IOMMU_PTW_HANDLE - MSHR.occupancy;
-//		cout << "handle width " << handle_width << " mshr occ " << MSHR.occupancy << " rq " << RQ.occupancy << " pq " << PQ.occupancy << endl;    
 		handle_fill(1);
 		while(RQ.occupancy &&   handle_width){
 			handle_width--;
@@ -510,26 +495,8 @@ void PAGE_TABLE_WALKER::operate()
                         handle_PQ();
                 }
 
-	/*	if(cpu == 1){
-			cout << "*************************** after PTW cpu " << cpu << endl;
-			cout << "occupancy mshr " << MSHR.occupancy << " rq " << RQ.occupancy << " PQ " << PQ.occupancy << endl;
-			cout << "cache type "<< NAME << " RQ occupancy " << RQ.occupancy << endl;
-			RQ.queuePrint();
-			cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
-			MSHR.queuePrint();
-			/* cout << "cache type "<< NAME << " PQ occupancy " << PQ.occupancy << endl;
-			   PQ.queuePrint();
-		}*/
 	}
 	else{
-                /* cout << "*************************** " << endl;
-		cout << "occupancy mshr " << MSHR.occupancy << " rq " << RQ.occupancy << " PQ " << PQ.occupancy << endl;
-                cout << "cache type "<< NAME << " RQ occupancy " << RQ.occupancy << endl;
-                RQ.queuePrint();
-                cout << "cache type "<< NAME << " MSHR occupancy " << MSHR.occupancy << endl;
-                MSHR.queuePrint();
-                cout << "cache type "<< NAME << " PQ occupancy " << PQ.occupancy << endl;
-		PQ.queuePrint();*/
 		if(MSHR.occupancy){
 			handle_fill(1);
 		}
@@ -842,6 +809,7 @@ int PAGE_TABLE_WALKER::add_mshr(PACKET *packet)
 
     return -1;
 }
+//Nilesh: method added  to add data in prefetch mshr
 int PAGE_TABLE_WALKER::add_prefetch_mshr(PACKET *packet)
 {
         uint32_t index =-1;
@@ -954,8 +922,9 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address,uint8_t pac
 	    loc_add[current_core_cycle[cpu]] = address;
     }*/
     for (uint32_t way=0; way<cache.NUM_WAY; way++) {
-//        if (cache.block[set][way].valid && (cache.block[set][way].cpu == packet_cpu) && (cache.block[set][way].tag == address)) {
-        if (cache.block[set][way].valid  && (cache.block[set][way].tag == address) ) {
+	    //Nilesh: cpu check added as PTW is shared
+        if (cache.block[set][way].valid && (cache.block[set][way].cpu == packet_cpu) && (cache.block[set][way].tag == address)) {
+//        if (cache.block[set][way].valid  && (cache.block[set][way].tag == address) ) {
 	    
 	    // COLLECT STATS
 	    if(cache.cache_type == IS_PSCL2 ){
@@ -1007,6 +976,7 @@ uint64_t PAGE_TABLE_WALKER::check_hit(CACHE &cache, uint64_t address,uint8_t pac
 */
 /*    if(cache.cache_type == IS_PSCL2_PB && status)
 	   PSCL2.PSCL2_prefetcher_operate(get_index(packet->full_virtual_address,IS_PSCL2) << LOG2_PAGE_SIZE, packet->ip, 1, packet->type, packet->instr_id, packet->instruction, packet->asid[0]);
+	//Nilesh: check for prefetch hit if prefetch status for accelerator is set
 */    if(cache.cache_type == IS_PSCL2 && cache.is_prefetch[packet_cpu]){
 	    return check_hit(PSCL2_PB,address,packet_cpu,packet,status);
 	    //check for prefetch buffer at PSCL2

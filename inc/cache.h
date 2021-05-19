@@ -17,7 +17,7 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 #define IS_L2C  5
 #define IS_LLC  6
 #define IS_PTW  7
-#define IS_SCRATCHPAD 15
+#define IS_SCRATCHPAD 15	//Nilesh: added for accelerator
 #ifdef PUSH_DTLB_PB
 #define IS_DTLB_PB 9
 #endif
@@ -27,8 +27,8 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 #define IS_PSCL4  9
 #define IS_PSCL3  10
 #define IS_PSCL2  11
-#define IS_PSCL2_VB  12 //victim buffer
-#define IS_PSCL2_PB  13
+#define IS_PSCL2_VB  12 	//Nilesh: victim buffer at PTL2
+#define IS_PSCL2_PB  13		//Nilesh: prefetch buffer at PTL2
 
 // QUEUE TYPE
 #define IS_RQ 0
@@ -72,6 +72,7 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 #define STLB_MSHR_SIZE 32
 #define STLB_LATENCY 10
 
+//Nilesh: scratchpad configuration
 // SCRATCHPAD CACHE
 #define SCRATCHPAD_SET 64
 #define SCRATCHPAD_WAY 16 
@@ -121,7 +122,7 @@ extern uint32_t PAGE_TABLE_LATENCY, SWAP_LATENCY;
 class CACHE : public MEMORY {
 	public:
     uint32_t cpu;
-    bool is_prefetch[NUM_CPUS];
+    bool is_prefetch[NUM_CPUS];	//Nilesh: to track is prefetcher is active or inactive for particular accelerator
     const string NAME;
     const uint32_t NUM_SET,  NUM_LINE, WQ_SIZE, RQ_SIZE, PQ_SIZE, MSHR_SIZE;
     uint32_t LATENCY, NUM_WAY;
@@ -171,10 +172,11 @@ class CACHE : public MEMORY {
              roi_access[NUM_CPUS][NUM_TYPES],
              roi_hit[NUM_CPUS][NUM_TYPES],
              roi_miss[NUM_CPUS][NUM_TYPES],
-	     stlb_merged;
+	     stlb_merged;	//Nilesh: total number of packets merged
 
-    uint64_t total_miss_latency, sim_latency[NUM_CPUS], total_lat_req[NUM_CPUS], check_stlb_counter[NUM_CPUS];
+    uint64_t total_miss_latency, sim_latency[NUM_CPUS], total_lat_req[NUM_CPUS], check_stlb_counter[NUM_CPUS];	//Nilesh: for calculating latency
 
+    //Nilesh: for calculating address reuse distance
     unordered_map<uint64_t,uint64_t> add_loc;
     unordered_set<uint64_t> coldMiss,total_address;
     map<uint64_t,uint64_t> loc_add, dist_count;
@@ -202,7 +204,7 @@ class CACHE : public MEMORY {
 	    sim_latency[i] = 0;
 	    total_lat_req[i] = 0;
 	    check_stlb_counter[i] = 0;
-	    is_prefetch[i] = false;
+	    is_prefetch[i] = true;	//Nilesh: initializing prefetcher
 
 	    for (uint32_t j=0; j<NUM_CPUS; j++) 
 		    eviction_matrix[i][j]=0;
@@ -285,64 +287,64 @@ class CACHE : public MEMORY {
          check_nonfifo_queue(PACKET_QUEUE *queue, PACKET *packet, bool packet_direction); //@Vishal: Updated from check_mshr
 
     void handle_fill(),
-	 handle_scratchpad_mshr_translation(uint8_t mshr_type), //@Nilesh: for scratchpad
+	 handle_scratchpad_mshr_translation(uint8_t mshr_type), //Nilesh: for scratchpad
          handle_writeback(),
          handle_read(),
-	 handle_read_scratchpad(), //@Nilesh: for scratchpad
+	 handle_read_scratchpad(), //Nilesh: for scratchpad
          handle_prefetch(),
 	 flush_TLB(),
          handle_processed();
 
     void add_nonfifo_queue(PACKET_QUEUE *queue, PACKET *packet), //@Vishal: Updated from add_mshr
-	 handle_stlb_merged_translations(PACKET *packet,uint64_t data, bool flag), 	//@Nilesh: to handle stlb merged translations
+	 handle_stlb_merged_translations(PACKET *packet,uint64_t data, bool flag), 	//Nilesh: to handle stlb merged translations
          update_fill_cycle(),
-	 update_fill_cycle_scratchpad(uint8_t mshr_type), //@Nilesh: for scratchpad
+	 update_fill_cycle_scratchpad(uint8_t mshr_type), //Nilesh: for scratchpad
          llc_initialize_replacement(),
          dtlb_initialize_replacement(),
-         stlb_initialize_replacement(),
-         PSCL2_initialize_replacement(),
+         stlb_initialize_replacement(),			//Nilesh: initialization of STLB replacement policy
+         PSCL2_initialize_replacement(),		//Nilesh: intialization of PSCL2 replacement policy
          update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          dtlb_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
-         stlb_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
-         PSCL2_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
+         stlb_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),					//Nilesh: STLB update replacement policy
+         PSCL2_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),					//Nilesh: PSCL2 update replacement policy
          lru_update(uint32_t set, uint32_t way),
          fill_cache(uint32_t set, uint32_t way, PACKET *packet),
          replacement_final_stats(),
          llc_replacement_final_stats(),
          dtlb_replacement_final_stats(),
-         stlb_replacement_final_stats(),
-         PSCL2_replacement_final_stats(),
+         stlb_replacement_final_stats(),		//Nilesh: STLB
+         PSCL2_replacement_final_stats(),		//Nilesh: PSCL2
          //prefetcher_initialize(),
          l1d_prefetcher_initialize(),
          l2c_prefetcher_initialize(),
          llc_prefetcher_initialize(),
          itlb_prefetcher_initialize(),
          dtlb_prefetcher_initialize(), 
-         PSCL2_prefetcher_initialize(), 
-         stlb_prefetcher_initialize(),
+         PSCL2_prefetcher_initialize(), 		//Nilesh: PSCL2
+         stlb_prefetcher_initialize(),			//Nilesh: STLB
          prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type),
          l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type), //, uint64_t prefetch_id),
          itlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
-         dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),
-         PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid, uint8_t cpu),
-         stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction),
+         dtlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid),						
+         PSCL2_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction,uint8_t core_asid, uint8_t cpu),				//Nilesh: PSCL2
+         stlb_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint64_t prefetch_id, uint8_t instruction), 	//Nilesh: STLB
          prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr),
          l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          itlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
          dtlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
-         PSCL2_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
-         stlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),
+         PSCL2_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),	//Nilesh: PSCL2
+         stlb_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in),	//Nilesh: STLB
          //prefetcher_final_stats(),
          l1d_prefetcher_final_stats(),
          l2c_prefetcher_final_stats(),
          llc_prefetcher_final_stats(),
          itlb_prefetcher_final_stats(),
          dtlb_prefetcher_final_stats(),
-         PSCL2_prefetcher_final_stats(),
-         stlb_prefetcher_final_stats();
+         PSCL2_prefetcher_final_stats(),	//Nilesh: PSCL2
+         stlb_prefetcher_final_stats();		//Nilesh: stlb
 
-	int add_mshr_data_queue_scratchpad(PACKET_QUEUE *queue, PACKET *packet);
+	int add_mshr_data_queue_scratchpad(PACKET_QUEUE *queue, PACKET *packet);  //Nilesh: handlling scratchpad's MSHR
 
     uint32_t l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in),	// uint64_t prefetch_id),
          llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in),	//, uint64_t prefetch_id),
@@ -354,8 +356,8 @@ class CACHE : public MEMORY {
              find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
              dtlb_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
-             stlb_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
-             PSCL2_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),
+             stlb_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),		//Nilesh: STLB
+             PSCL2_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type),	//Nilesh: PSCL2
              lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type);
 };
 

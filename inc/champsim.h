@@ -53,14 +53,15 @@
 #define SCRATCHPADPRINT(x)  
 
 // CPU
-#define NUM_CPUS 1
+#define NUM_CPUS 1		//Nilesh: it shows total number of CPUS + Accelerators
 #define CPU_FREQ 4000
 #define DRAM_IO_FREQ 6400	//1600	Neelu: Changed
 #define PAGE_SIZE 4096
 #define LOG2_PAGE_SIZE 12
 
+//Nilesh: Accelerator configuration
 //ACCELERATOR
-#define ACCELERATOR_START 1
+#define ACCELERATOR_START 1 	//Nilesh: shows the starting number of accelerator, for 0 CPUs accelerator start number will be 0
 #define IOMMU_PTW_HANDLE 8
 #define IOMMU_PREFETCH_PTW_HANDLE 2
 
@@ -73,7 +74,7 @@
 #define INFLIGHT 1
 #define COMPLETED 2
 
-#define FILL_SCRATCHPAD 1
+#define FILL_SCRATCHPAD 1	//Nilesh: added for accelerator's scratchpad
 #define FILL_L1    1
 #define FILL_ITLB  1
 #define FILL_DTLB  1

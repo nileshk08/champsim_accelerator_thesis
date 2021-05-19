@@ -65,7 +65,7 @@ class DRAM_ARRAY {
 // message packet
 class PACKET {
   public:
-
+	//Nilesh : for tracking merge request
     bool stlb_merged,
 	 scratchpad_mshr_merged,
 	 is_translation;
@@ -139,10 +139,11 @@ class PACKET {
              ip, 
              event_cycle,
              cycle_enqueued;
-
+	//Nilesh: added for tracking merge packets
     queue<PACKET> stlb_depends_on_me, scratchpad_mshr_depends_on_me;
 
     PACKET() {
+	//Nilesh: initializing merge status
 	stlb_merged = false;
 	scratchpad_mshr_merged = false;
 	is_translation = false;

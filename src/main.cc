@@ -389,6 +389,7 @@ void finish_warmup()
 void print_deadlock(uint32_t i)
 {
 	int k = i;
+	//Nilesh: print data for all acclerators
 	for(int i=0;i<NUM_CPUS;i++){
     cout << "DEADLOCK! CPU " << i << " instr_id: " << ooo_cpu[i].ROB.entry[ooo_cpu[i].ROB.head].instr_id;
     cout << " translated: " << +ooo_cpu[i].ROB.entry[ooo_cpu[i].ROB.head].translated;
@@ -704,6 +705,7 @@ void swap_context(uint8_t swap_cpu_0, uint8_t swap_cpu_1)
 
 }
 
+//Nilesh: method added to control the prefetch status for accelerators at PTL2
 int prefetch_counter = 0;
 bool prefetch_flag = true;
 void check_prefetch_status_ptl2(){
@@ -863,7 +865,7 @@ int main(int argc, char** argv)
             printf("CPU %d runs %s with asid %s\n", count_traces, argv[i],argv[i+1]);
 
             sprintf(ooo_cpu[count_traces].trace_string, "%s", argv[i]);
-	    ooo_cpu[count_traces].core_asid = stoi(argv[i+1]);
+	    ooo_cpu[count_traces].core_asid = stoi(argv[i+1]);	//Nilesh: to set ASID for accelerators
 
             char *full_name = ooo_cpu[count_traces].trace_string,
                  *last_dot = strrchr(ooo_cpu[count_traces].trace_string, '.');
@@ -993,7 +995,7 @@ int main(int argc, char** argv)
         ooo_cpu[i].ITLB.cpu = i;
         ooo_cpu[i].ITLB.cache_type = IS_ITLB;
         ooo_cpu[i].ITLB.fill_level = FILL_L1;
-	if(i >= ACCELERATOR_START){
+	if(i >= ACCELERATOR_START){	//Nilesh: ITLB lower level points to shared STLB
 		ooo_cpu[i].ITLB.lower_level = &ooo_cpu[ACCELERATOR_START].STLB; 
 		ooo_cpu[i].ITLB.extra_interface = &ooo_cpu[i].SCRATCHPAD;
 	}
@@ -1007,11 +1009,11 @@ int main(int argc, char** argv)
         ooo_cpu[i].DTLB.cache_type = IS_DTLB;
         ooo_cpu[i].DTLB.MAX_READ = (2 > MAX_READ_PER_CYCLE) ? MAX_READ_PER_CYCLE : 2;
         ooo_cpu[i].DTLB.fill_level = FILL_L1;
-	if(i >= ACCELERATOR_START)
+	if(i >= ACCELERATOR_START)	//Nilesh: DTLB extra interface points to sratchpad 
 		ooo_cpu[i].DTLB.extra_interface = &ooo_cpu[i].SCRATCHPAD;
 	else
 		ooo_cpu[i].DTLB.extra_interface = &ooo_cpu[i].L1D;
-	if(i >= ACCELERATOR_START){
+	if(i >= ACCELERATOR_START){	//Nilesh: DTLB lower level points to shared STLB
 		ooo_cpu[i].DTLB.lower_level = &ooo_cpu[ACCELERATOR_START].STLB;
 	}
 	else
@@ -1028,7 +1030,7 @@ int main(int argc, char** argv)
         ooo_cpu[i].STLB.cpu = i;
         ooo_cpu[i].STLB.cache_type = IS_STLB;
         ooo_cpu[i].STLB.fill_level = FILL_L2;
-	if(i >= ACCELERATOR_START){
+	if(i >= ACCELERATOR_START){	//Nilesh: shared STLB upper level points to private I/DTLB
 		ooo_cpu[ACCELERATOR_START].STLB.upper_level_icache[i] = &ooo_cpu[i].ITLB;
 		ooo_cpu[ACCELERATOR_START].STLB.upper_level_dcache[i] = &ooo_cpu[i].DTLB; 
 	}
@@ -1060,6 +1062,7 @@ int main(int argc, char** argv)
 	ooo_cpu[i].PTW.PSCL2.PSCL2_initialize_replacement();
 	ooo_cpu[i].PTW.PSCL2.PSCL2_prefetcher_initialize();
 
+	//Nilesh: for Scratchpad
 	if(i >= ACCELERATOR_START){
 		ooo_cpu[i].SCRATCHPAD.cpu = i;
 		ooo_cpu[i].SCRATCHPAD.cache_type = IS_SCRATCHPAD;
@@ -1334,7 +1337,7 @@ int main(int argc, char** argv)
 		record_roi_stats(i, &ooo_cpu[i].L1D);
                 record_roi_stats(i, &ooo_cpu[i].L1I);
                 record_roi_stats(i, &ooo_cpu[i].L2C);
-		record_roi_stats(i, &ooo_cpu[i].SCRATCHPAD);
+		record_roi_stats(i, &ooo_cpu[i].SCRATCHPAD);	//Nilesh: Scratchpad
                 record_roi_stats(i, &uncore.LLC);
 		#ifdef PUSH_DTLB_PB
 		record_roi_stats(i, &ooo_cpu[i].DTLB_PB);
@@ -1345,7 +1348,7 @@ int main(int argc, char** argv)
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL4);
 		record_roi_stats(i, &ooo_cpu[i].PTW.PSCL3);
 		record_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2);
-		record_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB);
+		record_roi_stats(i, &ooo_cpu[ACCELERATOR_START].PTW.PSCL2_PB);	//Nilesh: PTL2 Prefetch buffer
 
                 all_simulation_complete++;
             }
@@ -1378,6 +1381,7 @@ int main(int argc, char** argv)
     for(int i=0;i<NUM_CPUS;i++){
     	cout << "Accelerator " << i << "  status " << ooo_cpu[ACCELERATOR_START].PTW.PSCL2.is_prefetch[i]  << endl;
     }
+    //Nilesh: print cross accelerator eviction at PTL2
     for(int i=0;i<NUM_CPUS;i++){
 	    cout << "Eviction " << i ;
 	    for(int j=0;j<NUM_CPUS;j++){

@@ -17,6 +17,8 @@ vector <uint64_t> regions_accessed, total_regions;                             /
 bool STLB_FLAG = false;
 bool ITLB_FLAG = false;
 bool printFlag = false;
+
+//Nilesh: Method added for updating fill cycle for scratchpad
 void CACHE::update_fill_cycle_scratchpad(uint8_t mshr_type)
 {
         // update next_fill_cycle
@@ -55,8 +57,10 @@ void CACHE::update_fill_cycle_scratchpad(uint8_t mshr_type)
 				cout << "instr_id " << temp_mshr->entry[min_index].instr_id << endl;
 			})
 }
+
+//Nilesh: method added for handling mshr at scratchpad
 void CACHE::handle_scratchpad_mshr_translation(uint8_t mshr_type)
-{
+{	
 	// handle fill
 	PACKET_QUEUE *temp_mshr = mshr_type ? &MSHR_TRANSLATION : &MSHR_DATA;
 	uint32_t fill_cpu = (temp_mshr->next_fill_index == MSHR_SIZE) ? NUM_CPUS : temp_mshr->entry[temp_mshr->next_fill_index].cpu;
@@ -235,11 +239,13 @@ void CACHE::handle_fill()
 		else if(cache_type == IS_STLB){
 			way = stlb_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
-		else if(cache_type == IS_PSCL2){
+		else if(cache_type == IS_PSCL2){	//Nilesh: find victim for PSCL2
 			way = PSCL2_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
 		}
 		else
 			way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
+
+		//Nilesh: for tracking cross accelerator evictions
 		if(cache_type == IS_PSCL2_PB)
 			if(block[set][way].valid){
 				eviction_matrix[MSHR.entry[mshr_index].cpu][block[set][way].cpu]++;
@@ -261,14 +267,14 @@ void CACHE::handle_fill()
 
 			}
 
-			else if (cache_type == IS_PSCL2) {
+			else if (cache_type == IS_PSCL2) {	//Nilesh: PSCL2 update replacement policy
 				PSCL2_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
 			}
 			else
 				update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 
-			// COLLECT STATS
+			//Nilesh: collect stat for shared STLB 
 			if(cache_type == IS_STLB && fill_cpu >= ACCELERATOR_START){
 				sim_miss[ACCELERATOR_START][MSHR.entry[mshr_index].type]++;
 				sim_access[ACCELERATOR_START][MSHR.entry[mshr_index].type]++;
@@ -364,7 +370,7 @@ void CACHE::handle_fill()
 						block[set][way].address<<LOG2_BLOCK_SIZE, MSHR.entry[mshr_index].pf_metadata);
 				cpu = 0;
 			}
-			if (cache_type == IS_PSCL2 && is_prefetch[MSHR.entry[mshr_index].cpu]){
+			if (cache_type == IS_PSCL2 && is_prefetch[MSHR.entry[mshr_index].cpu]){	//Nilesh: prefetcher for PSCL2
 				PSCL2_prefetcher_operate(MSHR.entry[mshr_index].address << LOG2_PAGE_SIZE, MSHR.entry[mshr_index].ip, 1, MSHR.entry[mshr_index].type, MSHR.entry[mshr_index].instr_id, MSHR.entry[mshr_index].instruction, MSHR.entry[mshr_index].asid[0], MSHR.entry[mshr_index].cpu);
 			}
 //						dtlb_prefetcher_operate(RQ.entry[index].address<<LOG2_PAGE_SIZE, RQ.entry[index].ip, 1, RQ.entry[index].type, RQ.entry[index].instr_id, RQ.entry[index].instruction,RQ.entry[index].asid[0] );
@@ -377,11 +383,11 @@ void CACHE::handle_fill()
 				dtlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 			
 			}
-			else if (cache_type == IS_STLB) {
+			else if (cache_type == IS_STLB) {	//Nilesh: STLB replacement policy
 				stlb_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
 			
 			}
-			else if (cache_type == IS_PSCL2) {
+			else if (cache_type == IS_PSCL2) {	//Nilesh: PSCl2 replacement policy
 			/*	if(block[set][way].valid){
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].fill_level = 0;
 					ooo_cpu[ACCELERATOR_START].PTW.PSCL2_VB.MSHR.entry[0].cpu = block[set][way].cpu;
@@ -404,7 +410,7 @@ void CACHE::handle_fill()
 			else
 				update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
 
-			// COLLECT STATS
+			//Nilesh: COLLECT STATS for shared STLB
 			if(cache_type == IS_STLB && fill_cpu >= ACCELERATOR_START){
 				sim_miss[ACCELERATOR_START][MSHR.entry[mshr_index].type]++;
 				sim_access[ACCELERATOR_START][MSHR.entry[mshr_index].type]++;
@@ -445,7 +451,7 @@ void CACHE::handle_fill()
 #endif
 
 			// RFO marks cache line dirty
-			if (cache_type == IS_L1D || cache_type == IS_SCRATCHPAD) {
+			if (cache_type == IS_L1D || cache_type == IS_SCRATCHPAD) {	//Nilesh: check added for scratchpad
 				if (MSHR.entry[mshr_index].type == RFO)
 					block[set][way].dirty = 1;
 			}
@@ -488,7 +494,7 @@ void CACHE::handle_fill()
 					STLBPRINT(if(STLB_FLAG) { cout << "two  adding to   upper from stlb 1 packet cpu  " << MSHR.entry[mshr_index].cpu << endl;})
 					if(MSHR.entry[mshr_index].send_both_tlb)
 					{
-						if(fill_cpu >= ACCELERATOR_START){
+						if(fill_cpu >= ACCELERATOR_START){	//Nilesh: return data from shared STLB to private TLB
 							upper_level_icache[MSHR.entry[mshr_index].cpu]->return_data(&MSHR.entry[mshr_index]);
 							upper_level_dcache[MSHR.entry[mshr_index].cpu]->return_data(&MSHR.entry[mshr_index]);
 						}
@@ -538,6 +544,7 @@ void CACHE::handle_fill()
 			if(ITLB_FLAG)
 				cout << "type " << (int)MSHR.entry[mshr_index].type << endl;
 			if ((cache_type == IS_ITLB) && (MSHR.entry[mshr_index].type != PREFETCH)) { //@v Responses to prefetch requests should not go to PROCESSED queue 
+				//Nilesh: calculating average latency
 				auto difference = current_core_cycle[cpu] - MSHR.entry[mshr_index].tlb_start_cycle;
 				if (warmup_complete[cpu] && MSHR.entry[mshr_index].tlb_start_cycle > 0 &&  difference > 0){
 				QPRINT(	if( current_core_cycle[cpu] - MSHR.entry[mshr_index].tlb_start_cycle <= 0)
@@ -549,13 +556,14 @@ void CACHE::handle_fill()
 				MSHR.entry[mshr_index].is_translation = 1;
 				if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
 					PROCESSED.add_queue(&MSHR.entry[mshr_index]);
-				else if(cpu >= ACCELERATOR_START){
+				else if(cpu >= ACCELERATOR_START){		//Nilesh: added to the scratchpad MSHR
 					SCRATCHPADPRINT(cout << " 1 return from ITLB addr " << MSHR.entry[mshr_index].address << endl;)
 					extra_interface->return_data(&MSHR.entry[mshr_index]);
 				
 				}
 			}
 			else if ((cache_type == IS_DTLB) && (MSHR.entry[mshr_index].type != PREFETCH)) {
+				//Nilesh: calculating average latency
 				auto difference = current_core_cycle[cpu] - MSHR.entry[mshr_index].tlb_start_cycle;
 				if (warmup_complete[cpu] && MSHR.entry[mshr_index].tlb_start_cycle > 0 &&  difference > 0){
 				QPRINT(	if( current_core_cycle[cpu] - MSHR.entry[mshr_index].tlb_start_cycle <= 0)
@@ -567,7 +575,7 @@ void CACHE::handle_fill()
 				MSHR.entry[mshr_index].data_pa = block[set][way].data;
 				if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
 					PROCESSED.add_queue(&MSHR.entry[mshr_index]);
-				else if(cpu >= ACCELERATOR_START)
+				else if(cpu >= ACCELERATOR_START)		//Nilesh: added to the scratchpad MSHR
 					extra_interface->return_data(&MSHR.entry[mshr_index]);
 			}
 			else if (cache_type == IS_L1I) {
@@ -1111,6 +1119,7 @@ void CACHE::handle_processed()
 	}
 }
 
+//Nilesh: method added for handling scratchpad RQ
 void CACHE::handle_read_scratchpad()
 {
 
@@ -1351,7 +1360,7 @@ void CACHE::handle_read()
 				cout << " handle read processing rob id " << RQ.entry[index].rob_index << " packet cpu " << RQ.entry[index].cpu << endl;
 			}
 
-/*			if(cpu >= ACCELERATOR_START && ( cache_type == IS_DTLB)){
+/*			if(cpu >= ACCELERATOR_START && ( cache_type == IS_DTLB)){	//Nilesh: for ideal DTLB
                           //      coldMiss_DTLB.insert(RQ.entry[index].address);
                                 extra_interface->return_data(&RQ.entry[index]);
                                 RQ.remove_queue(&RQ.entry[index]);
@@ -1387,7 +1396,7 @@ void CACHE::handle_read()
 					
 					if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
 						 PROCESSED.add_queue(&RQ.entry[index]);
-					else if(cpu >= ACCELERATOR_START){
+					else if(cpu >= ACCELERATOR_START){	//Nilesh: added to scratchpad MSHR
 						SCRATCHPADPRINT(cout << " 1 return from ITLB addr " << MSHR.entry[mshr_index].address << endl;)
 							extra_interface->return_data(&RQ.entry[index]);
 
@@ -1415,6 +1424,7 @@ void CACHE::handle_read()
 
 				if (cache_type == IS_ITLB) {
 
+					//Nilesh: calculating average latency
 					auto difference = current_core_cycle[cpu] - RQ.entry[index].tlb_start_cycle;
 					if (warmup_complete[cpu] && RQ.entry[index].tlb_start_cycle > 0 &&  difference > 0){
 						QPRINT(	if( current_core_cycle[cpu] - RQ.entry[index].tlb_start_cycle <= 0)
@@ -1427,12 +1437,13 @@ void CACHE::handle_read()
 					//RQ.entry[index].event_cycle = current_core_cycle[read_cpu];
 					if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
 						PROCESSED.add_queue(&RQ.entry[index]);
-					else if(cpu >= ACCELERATOR_START ){
+					else if(cpu >= ACCELERATOR_START ){	//Nilesh: added to scrathpad MSHR
 						extra_interface->return_data(&RQ.entry[index]);
 					}
 				}
 				else if (cache_type == IS_DTLB) {
 					//RQ.entry[index].data_pa = (va_to_pa(read_cpu, RQ.entry[index].instr_id, RQ.entry[index].full_addr, RQ.entry[index].address))>>LOG2_PAGE_SIZE;  //block[set][way].data;
+					//Nilesh: calculating average latency
 					if (warmup_complete[cpu] && RQ.entry[index].tlb_start_cycle > 0 && current_core_cycle[cpu] -  RQ.entry[index].tlb_start_cycle >0 ){
 						total_lat_req[cpu]++;
 						QPRINT(	if( current_core_cycle[cpu] - RQ.entry[index].tlb_start_cycle <= 0)
@@ -1444,7 +1455,7 @@ void CACHE::handle_read()
 					//RQ.entry[index].event_cycle = current_core_cycle[read_cpu];
 					if (cpu < ACCELERATOR_START && PROCESSED.occupancy < PROCESSED.SIZE)
 						PROCESSED.add_queue(&RQ.entry[index]);
-					else if(cpu >= ACCELERATOR_START )
+					else if(cpu >= ACCELERATOR_START )	//Nilesh: added to scratchpad MSHR
 						extra_interface->return_data(&RQ.entry[index]);
 				}
 				else if (cache_type == IS_STLB  && cpu < ACCELERATOR_START) 
@@ -1459,6 +1470,7 @@ void CACHE::handle_read()
 						temp.data_pa = block[set][way].data;
 						temp.read_translation_merged = false;
 						temp.write_translation_merged = false;
+						//Nilesh: average latency
 						if (warmup_complete[cpu] && RQ.entry[index].stlb_start_cycle > 0){
 							if(cpu >= ACCELERATOR_START){
 								if(current_core_cycle[ACCELERATOR_START] -  RQ.entry[index].stlb_start_cycle >0){
@@ -1486,6 +1498,7 @@ void CACHE::handle_read()
 						temp.data_pa = block[set][way].data;
 						temp.read_translation_merged = 0; //@Vishal: Remove this before adding to PQ
 						temp.write_translation_merged = 0;
+						//Nilesh: average latency
 						if (warmup_complete[cpu] && RQ.entry[index].stlb_start_cycle > 0){
 							if(cpu >= ACCELERATOR_START){
 								if(current_core_cycle[ACCELERATOR_START] -  RQ.entry[index].stlb_start_cycle > 0){
@@ -1569,6 +1582,7 @@ void CACHE::handle_read()
 				else if (cache_type == IS_DTLB) {
 					dtlb_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 				}
+				//Nilesh:update STLB replacement policy 
 				else if (cache_type == IS_STLB) {
 					stlb_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 				}
@@ -1576,6 +1590,7 @@ void CACHE::handle_read()
 					update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
 
 				// COLLECT STATS
+				//Nilesh: STLB stats
 				if(cache_type == IS_STLB && cpu >= ACCELERATOR_START){
 					sim_hit[ACCELERATOR_START][RQ.entry[index].type]++;
 					sim_access[ACCELERATOR_START][RQ.entry[index].type]++;
@@ -1607,6 +1622,7 @@ void CACHE::handle_read()
 							total_lat_req[cpu]++;
 							sim_latency[cpu] += current_core_cycle[cpu] - RQ.entry[index].stlb_start_cycle ;
 */
+							//Nilesh: send to private TLB according to packet CPU
 							upper_level_icache[RQ.entry[index].cpu]->return_data(&RQ.entry[index]);
 							upper_level_dcache[RQ.entry[index].cpu]->return_data(&RQ.entry[index]);
 						}
@@ -1616,6 +1632,7 @@ void CACHE::handle_read()
 				/*			assert(RQ.entry[index].stlb_start_cycle >= 0);
 							total_lat_req[cpu]++;
 							sim_latency[cpu] += current_core_cycle[cpu] - RQ.entry[index].stlb_start_cycle ;
+							//Nilesh: send to private TLB according to packet CPU
 				*/			upper_level_icache[RQ.entry[index].cpu]->return_data(&RQ.entry[index]);
 						}
 						else // data
@@ -1624,6 +1641,7 @@ void CACHE::handle_read()
 		/*					assert(RQ.entry[index].stlb_start_cycle >= 0);
 							total_lat_req[cpu]++;
 							sim_latency[cpu] += current_core_cycle[cpu] - RQ.entry[index].stlb_start_cycle ;
+							//Nilesh: send to private TLB according to packet CPU
 		*/					upper_level_dcache[RQ.entry[index].cpu]->return_data(&RQ.entry[index]);
 						}
 #ifdef SANITY_CHECK
@@ -1701,6 +1719,7 @@ void CACHE::handle_read()
 						cout << " full_addr: " << RQ.entry[index].full_addr << dec;
 						cout << " cycle: " << RQ.entry[index].event_cycle << endl; });
 
+				//Nilesh: for calculating reuse distance
 	/*			if(cache_type == IS_DTLB){
 					if(add_loc.count(RQ.entry[index].address-1)){
 						int count = 0;
@@ -2211,6 +2230,7 @@ void CACHE::handle_prefetch()
 				else if (cache_type == IS_DTLB) {
 					dtlb_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
 				}
+				//Nilesh: update STLB replacement state
 				else if (cache_type == IS_STLB) {
 					stlb_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
 				}
@@ -2580,6 +2600,7 @@ void CACHE::operate()
 			MSHR.queuePrint();
 		}
 	}
+	//Nilesh: update fill cycle for scratchpad
 	if(cpu >= ACCELERATOR_START && cache_type == IS_SCRATCHPAD){
 		update_fill_cycle_scratchpad(1);
 		update_fill_cycle_scratchpad(0);
@@ -2933,7 +2954,7 @@ int CACHE::add_rq(PACKET *packet)
 			assert(0);
 #endif
 		// update processed packets
-		if (((cache_type == IS_L1D) || (cache_type == IS_SCRATCHPAD))  && (packet->type != PREFETCH)) {
+		if (((cache_type == IS_L1D) || (cache_type == IS_SCRATCHPAD))  && (packet->type != PREFETCH)) {	//Nilesh: check added for scratchpad
 			if (PROCESSED.occupancy < PROCESSED.SIZE)
 				PROCESSED.add_queue(packet);
 
@@ -3420,7 +3441,7 @@ int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level
 		pf_packet.event_cycle = current_core_cycle[cpu];
 
 		// give a dummy 0 as the IP of a prefetch
-		if(cache_type == IS_PSCL2){
+		if(cache_type == IS_PSCL2){	//Nilesh: for PTL2 
 //			pf_packet.translation_level = 1; 
 			ooo_cpu[ACCELERATOR_START].PTW.add_pq(&pf_packet);
 		}
@@ -3460,7 +3481,7 @@ int CACHE::prefetch_translation(uint64_t ip, uint64_t pf_addr, int pf_fill_level
 		pf_packet.event_cycle = current_core_cycle[cpu];
 
 		// give a dummy 0 as the IP of a prefetch
-		if(cache_type == IS_PSCL2){
+		if(cache_type == IS_PSCL2){		//Nilesh: for PTL2
 //			pf_packet.translation_level = 1; 
 			ooo_cpu[ACCELERATOR_START].PTW.add_pq(&pf_packet);
 		}
@@ -3707,6 +3728,7 @@ int CACHE::add_pq(PACKET *packet)
 void CACHE::return_data(PACKET *packet)
 {
 	// check MSHR information
+	//Nilesh: condition added for scratchpad return data
 	if(cache_type == IS_SCRATCHPAD){
 		SCRATCHPADPRINT(cout << "inside return data for scratchpad  instrid " << packet->instr_id << " is translation " << packet->is_translation << " address " << packet->address << endl;)
 		PACKET_QUEUE *temp_mshr = (packet->type == TRANSLATION) ? &MSHR_TRANSLATION : &MSHR_DATA;
@@ -3892,7 +3914,7 @@ int CACHE::check_nonfifo_queue(PACKET_QUEUE *queue, PACKET *packet, bool packet_
 	{
 		// search queue
 		for (uint32_t index=0; index < queue->SIZE; index++) {
-			if (queue->entry[index].address == check_address  && (queue->entry[index].asid[0] == packet->asid[0])) {	//@Nilesh: added for accelerators address space 
+			if (queue->entry[index].address == check_address  && (queue->entry[index].asid[0] == packet->asid[0])) {	//Nilesh: added for accelerators address space 
 
 				DP ( if (warmup_complete[packet->cpu]) {
 						cout << "[" << NAME << "_" << queue->NAME << "] " << __func__ << " same entry instr_id: " << packet->instr_id << " prior_id: " << queue->entry[index].instr_id;
@@ -3900,7 +3922,7 @@ int CACHE::check_nonfifo_queue(PACKET_QUEUE *queue, PACKET *packet, bool packet_
 						cout << " full_addr: " << packet->full_addr << dec << endl; });
 				if(cache_type == IS_STLB && (queue->entry[index].cpu != packet->cpu)){
 					stlb_merged++;
-					queue->entry[index].stlb_merged = true;		//@Nilesh: address space is shared among accelerators
+					queue->entry[index].stlb_merged = true;		//Nilesh: address space is shared among accelerators
 					queue->entry[index].stlb_depends_on_me.push(*packet);
 					if(packet->stlb_merged){
 						while(!packet->stlb_depends_on_me.empty()){
@@ -4085,6 +4107,7 @@ void CACHE::increment_WQ_FULL(uint64_t address)
 	WQ.FULL++;
 }
 
+//Nilesh: method added for handling merged translations at STLB
 void CACHE::handle_stlb_merged_translations(PACKET *packet,uint64_t data, bool flag){
 	packet->stlb_merged = false;
 	queue<PACKET> dependent_packets = packet->stlb_depends_on_me;

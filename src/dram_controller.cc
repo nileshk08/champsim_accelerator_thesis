@@ -341,6 +341,7 @@ void MEMORY_CONTROLLER::process(PACKET_QUEUE *queue)
 
                 // send data back to the core cache hierarchy
 		if(op_cpu >= ACCELERATOR_START){
+			//Nilesh: send data to shared STLB
 			if(queue->entry[request_index].type == TRANSLATION || queue->entry[request_index].type == PREFETCH){
 				extra_interface-> return_data(&queue->entry[request_index]);
 			}
@@ -440,6 +441,7 @@ int MEMORY_CONTROLLER::add_rq(PACKET *packet)
     // simply return read requests with dummy response before the warmup
     if (all_warmup_complete < NUM_CPUS) {
 	    if(packet->cpu >= ACCELERATOR_START){
+			//Nilesh: send data to shared STLB
                 if(packet -> type == TRANSLATION || packet-> type == PREFETCH){
 			SCRATCHPADPRINT(cout << "add from dram 1  trans " << (int) packet->type  << " cpu " << packet->cpu << " instr id " << packet->instr_id << endl;)
                         extra_interface -> return_data(packet);
@@ -470,6 +472,7 @@ int MEMORY_CONTROLLER::add_rq(PACKET *packet)
         //if (packet->fill_level < fill_level) {
 		 packet->data = WQ[channel].entry[wq_index].data;
             if(packet->cpu >= ACCELERATOR_START){
+			//Nilesh: send data to shared STLB
                     if(packet -> type == TRANSLATION || packet-> type == PREFETCH){
                             extra_interface-> return_data(packet);
 			    no_of_PTW++;

@@ -131,6 +131,7 @@ void O3_CPU::handle_branch()
 
               //  arch_instr.asid[0] = current_cloudsuite_instr.asid[0];
               //  arch_instr.asid[1] = current_cloudsuite_instr.asid[1];
+		//Nilesh: set ASID for accelerators
                 arch_instr.asid[0] = core_asid;
                 arch_instr.asid[1] = core_asid;
 
@@ -291,6 +292,7 @@ void O3_CPU::handle_branch()
                 arch_instr.ip = current_instr.ip;
                 arch_instr.is_branch = current_instr.is_branch;
                 arch_instr.branch_taken = current_instr.branch_taken;
+		//Nilesh: set asid for Accelerator
                 arch_instr.asid[0] = core_asid;
                 arch_instr.asid[1] = core_asid;
 		////cout << arch_instr.instr_id <<" "<<arch_instr.ip<<" "<< arch_instr.is_branch<<" "<<arch_instr.branch_taken<<" "<<cpu<<endl;
@@ -517,7 +519,7 @@ void O3_CPU::fetch_instruction()
 	if(ROB.entry[fetch_index].ip == 0)
 		break;
 
-	//@Nilesh: acclerators can fetch only after tranlation completed
+	//Nilesh: acclerators can fetch only after tranlation completed
 /*	if(cpu >= ACCELERATOR_START)
 		if(ROB.entry[fetch_index].translated != COMPLETED)
 			break;
@@ -572,7 +574,7 @@ void O3_CPU::fetch_instruction()
 		cout << "address in fetch instruction " << fetch_packet.address << " full add " << fetch_packet.full_virtual_address << endl;
 	}
 */	int rq_index;
-	if(cpu >= ACCELERATOR_START){
+	if(cpu >= ACCELERATOR_START){	//Nilesh: added to the scratchpad instead of L1U
 //		SCRATCHPADPRINT(cout << "address in fetch instruction " << fetch_packet.address << " full add " << fetch_packet.full_virtual_address << endl;)
 //		if(cpu == 0 && fetch_packet.instr_id == 1481215)
 //			cout << "adding to scrathcpad" << endl;
@@ -1627,7 +1629,7 @@ int O3_CPU::execute_load(uint32_t rob_index, uint32_t lq_index, uint32_t data_in
     data_packet.event_cycle = LQ.entry[lq_index].event_cycle;
     
     int rq_index;
-    if(cpu >= ACCELERATOR_START){
+    if(cpu >= ACCELERATOR_START){	//Nilesh: add to the Scratchpad instead L1D
     /*	data_packet.address = LQ.entry[lq_index].physical_address >> LOG2_BLOCK_SIZE;
         data_packet.full_addr = LQ.entry[lq_index].physical_address;
         data_packet.fill_level = FILL_DRAM;
@@ -1747,7 +1749,7 @@ void O3_CPU::reg_RAW_release(uint32_t rob_index)
 
 void O3_CPU::operate_cache()
 {
-    if(cpu >= ACCELERATOR_START){
+    if(cpu >= ACCELERATOR_START){	//Nilesh: scratchpad operate
 	    SCRATCHPAD.operate();
     }
     ITLB.operate();
@@ -1777,7 +1779,7 @@ void O3_CPU::update_rob()
 {
     //@Vishal: VIPT ITLB processed entries will be handled by L1I cache.
     //@Nilesh: check for acclerators
-    if(cpu >= ACCELERATOR_START){
+    if(cpu >= ACCELERATOR_START){	//Nilesh: only check for scratchpad processed queue
 		/*if (ITLB.PROCESSED.occupancy && (ITLB.PROCESSED.entry[ITLB.PROCESSED.head].event_cycle <= current_core_cycle[cpu]))
 			complete_instr_fetch(&ITLB.PROCESSED, 1);
 		if (DTLB.PROCESSED.occupancy && (DTLB.PROCESSED.entry[DTLB.PROCESSED.head].event_cycle <= current_core_cycle[cpu]))
@@ -2201,7 +2203,7 @@ void O3_CPU::retire_rob()
         }
 
         if (num_store) {
-            if (((L1D.WQ.occupancy + num_store) <= L1D.WQ.SIZE) || (cpu >= ACCELERATOR_START)) {
+            if (((L1D.WQ.occupancy + num_store) <= L1D.WQ.SIZE) || (cpu >= ACCELERATOR_START)) {	//Nilesh: check added for accelerator
                 for (uint32_t i=0; i<MAX_INSTR_DESTINATIONS; i++) {
                     if (ROB.entry[ROB.head].destination_memory[i]) {
 
@@ -2231,7 +2233,7 @@ void O3_CPU::retire_rob()
                         data_packet.asid[1] = SQ.entry[sq_index].asid[1];
                         data_packet.event_cycle = current_core_cycle[cpu];
 
-			if( cpu >= ACCELERATOR_START) {
+			if( cpu >= ACCELERATOR_START) {		//Nilesh: check added for accelerator
 //                                data_packet.address = SQ.entry[sq_index].physical_address >> LOG2_BLOCK_SIZE;
 //                                data_packet.full_addr = SQ.entry[sq_index].physical_address;
 //                                data_packet.fill_level = FILL_DRAM;

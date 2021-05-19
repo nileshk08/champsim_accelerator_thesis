@@ -1,6 +1,7 @@
 #include "ooo_cpu.h"
 #include "block.h"
 
+//Nilesh: added for debug pupose
 void PACKET_QUEUE::queuePrint(){
 		cout << "********************************" << endl;
                 if ((head == tail) && occupancy == 0)
@@ -37,13 +38,13 @@ int PACKET_QUEUE::check_queue(PACKET *packet)
                 }
             }
             else {
-	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {
+	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {	//Nilesh: added check for ASID
 			if(entry[i].cpu != packet->cpu){
 					ooo_cpu[ACCELERATOR_START].STLB.stlb_merged++;
 					ooo_cpu[packet->cpu].STLB.check_stlb_counter[cpu]++;
 					    packet->stlb_start_cycle = current_core_cycle[cpu];
 
-                                        entry[i].stlb_merged = true;         //@Nilesh: address space is shared among accelerators
+                                        entry[i].stlb_merged = true;         //Nilesh: address space is shared among accelerators
                                         entry[i].stlb_depends_on_me.push(*packet);
                                         SPRINT(cout << "instruction merged in check queue " << NAME << " with packet cpu " << entry[i].cpu << " of packet cpu "<<  packet->cpu << endl;)
                                 }
@@ -72,11 +73,11 @@ int PACKET_QUEUE::check_queue(PACKET *packet)
                 }
             }
             else {
-	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {
+	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {	//Nilesh: added check for accelerators
 			if(entry[i].cpu != packet->cpu){
 					ooo_cpu[packet->cpu].STLB.check_stlb_counter[cpu]++;
 					    packet->stlb_start_cycle = current_core_cycle[cpu];
-                                        entry[i].stlb_merged = true;         //@Nilesh: address space is shared among accelerators
+                                        entry[i].stlb_merged = true;         //Nilesh: address space is shared among accelerators
                                         entry[i].stlb_depends_on_me.push(*packet);
                                         SPRINT(cout << "instruction merged in check queue " << NAME << " with packet cpu " << entry[i].cpu << " of packet cpu "<<  packet->cpu << endl;)
                                 }
@@ -100,11 +101,11 @@ int PACKET_QUEUE::check_queue(PACKET *packet)
                 }
             }
             else {
-	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {
+	    	if ((entry[i].address == packet->address) && (entry[i].asid[0] == packet->asid[0])) {	//Nilesh: asid check added
 			if(entry[i].cpu != packet->cpu){
 					ooo_cpu[packet->cpu].STLB.check_stlb_counter[cpu]++;
 					    packet->stlb_start_cycle = current_core_cycle[cpu];
-                                        entry[i].stlb_merged = true;         //@Nilesh: address space is shared among accelerators
+                                        entry[i].stlb_merged = true;         //Nilesh: address space is shared among accelerators
                                         entry[i].stlb_depends_on_me.push(*packet);
                                         SPRINT(cout << "instruction merged in check queue " << NAME << " with packet cpu " << entry[i].cpu << " of packet cpu "<<  packet->cpu << endl;)
                                 }
