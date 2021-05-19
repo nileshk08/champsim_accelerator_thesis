@@ -4,8 +4,7 @@
 modify according to our work needs. ChampSim can simulate single as well as multi-core
 systems. It takes application traces as input and generates simulation results. ChampSim
 has already provided the traces for a different set of benchmarks. If we want to use traces
-for a particular application, ChamSim has the convenience to generate traces for a partic-
-ular application using the PIN tool. It supports different replacement policies, prefetching
+for a particular application, ChamSim has the convenience to generate traces for a particular application using the PIN tool. It supports different replacement policies, prefetching
 techniques and branch predictors at different levels of cache. It gives the flexibility to
 implement new policies/prefetchers/predictors and update the existing ones. This repository is an extension of the original ChampSim repository(https://github.com/ChampSim/ChampSim), where we made some of the changes to simulate it for accelerator-centric architecture. 
 
